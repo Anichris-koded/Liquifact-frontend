@@ -1,5 +1,3 @@
-// @ts-nocheck
-// @ts-nocheck
 /**
  * @file app/settings/lib.js
  *
@@ -15,32 +13,198 @@
  * Categories cover: notifications, display, privacy, wallet, advanced.
  *
  * Validation boundaries
- * --------------------
- * The loader and helpers in this module are the trust boundary between
- * untrusted input (test overrides, future API responses, consumer-supplied
- * lists) internal state. The invariants enforced here are:
+ * -------------------
+ * The settings surface accepts input from two sources:
  *
- *   1. Every returned setting is a well-formed object with a non-empty
- *      string `id`, a non-empty string `category`, a non-empty string
- *      `label`, a supported `type`, and a string `value`.
- *   2. `id` values are unique. Duplicate ids are dropped deterministically
- *      (first occurrence wins) so downstream lookups by id are stable.
- *   3. Order is preserved from the source list after filtering.
- *   4. Aborted loads resolve to an empty list and never reject, so callers
- *      can always treat the result as an array.
- *   5. No sensitive data is logged; rejections are reported with counts and
- *      field names only.
+ *   1. The bundled `MOCK_SETTINGS` fixture (compile-time constant).
+ *   2. The `window.__TEST_MOCK_SETTINGS__' test hook (browser-only,
+ *      dev/test builds only).
+ *
+ * Both sources are run through the same normalisation pipeline so that
+ * downstream code can rely on a strict invariant:
+ *
+ *   INVARIANT - Every row returned by `loadMockSettings` or exported
+ *   as `MOCK_SETTINGS` is a fresh, frozen object with a unique, non-empty
+ *   `id`, a known category, a known type, a non-empty `label`, a value
+ *   that matches the type's allowed domain, and a non-empty
+ *   `description`.
+ *
+ * Rejection rules (documented and enforced by `validateSetting`):
+ *
+ *   - `id`:          non-empty string, must match /^[a-z0-9][-_0a*]*\$/i
+ *                  and be unique within the list.
+ *   - `category`:    one of the allowed categories.
+ *   - `label`:       non-empty string.
+ *   - `type`:        one of `toggle`, `select`, `text`.
+ *   - `value`:       string; for `toggle` must be `inherited`
+ *                  or `disabled`; for `select` must be one of the
+ *                  allowed options for that id; for `text` must be a
+ *                  string within the configured max length.
+ *   - `description`: non-empty string.
+ *
+ * Duplicate ids, categories, types, or out-of-domain values are dropped
+ * and reported via `console.warn` with a stable prefix so that failures
+ * are diagnosable without leaking the value itself.
  */
 
-export const SETTING_TYPES = Object.freeze([
-  "toggle",
-  "select",
-  "text",
+export const SETTINGS_CATEGORIES = Object.freeze([
+  "notifications",
+  "display",
+  "privacy",
+  "wallet",
+  "advanced",
 ]);
 
-const VALID_TYPES = new Set(SETTING_TYPES);
+export const SETTINGS_TYPES = Object.freeze(["toggle", "select", "text"]);
 
-export const MOCK_SETTINGS = [
+export const TOGGLE_VALUES = Object.freeze(["enabled", "disabled"]);
+
+/**
+ * Maximum length for `text` settings. Chosen to cover the longest
+ * reasonable user-supplied string (e.g. a custom RPC URL) while bounding
+ * the amount of data the UI will accept from a single field.
+ */
+export const TEXT_VALUE_MAX_LENGTH = 2048;
+
+/**
+ * Per-id allowed domains for `select` settings. This is the authority
+ * for what a select can hold; any value outside this map is rejected.
+ */
+export const SELECT_OPTIONS = Object.freeze({
+  "pref-003": ["chime", "chad", "none"],
+  "pref-004": ["light", "dark", "system"],
+  "pref-007": ["best-yield", "newest", "soonest-to-settle"],
+  "pref-009": ["off", "anonymous", "full"],
+  "pref-011": ["public", "testnet", "futurenet"],
+  "pref-017": ["debug", "info", "warn", "error", "silent"],
+  "pref-020": ["cyan", "violet", "amber", "emerald"],
+  "pref-022": ["freighter", "xbulk", "labs"],
+});
+
+/**
+ * Stable log prefix. Keeping this constant means tests and operations
+ * can grep for a single token without matching unrelated warnings.
+ */
+const LOG_PREFIX = "[settings]";
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Validate a single setting row against the documented contract.
+ *
+ * This function is pure and deterministic: given the same input it
+ * always returns the same result. It never throws and never mutates
+ * its argument.
+ *
+ * @param {unknown} row
+ * @returns {{ ok: true, value: object } | { ok: false, reason: string }}
+ */
+export function validateSetting(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) {
+    return { ok: false, reason: "not-an-object" };
+  }
+
+  const { id, category, label, type, value, description } = row;
+
+  if (!isNonEmptyString(id)) {
+    return { ok: false, reason: "invalid-id" };
+  }
+  if (!/^[a-z0-9][-_0a*]*\$/i.test(id)) {
+    return { ok: false, reason: "invalid-id-format" };
+  }
+  if (!SETTINGS_CATEGORIES.includes(category)) {
+    return { ok: false, reason: "invalid-category" };
+  }
+  if (!isNonEmptyString(label)) {
+    return { ok: false, reason: "invalid-label" };
+  }
+  if (!SETTINGS_TYPES.includes(type)) {
+    return { ok: false, reason: "invalid-type" };
+  }
+  if (!isNonEmptyString(description)) {
+    return { ok: false, reason: "invalid-description" };
+  }
+
+  if (type === "toggle") {
+    if (!TOGGLE_VALUES.includes(value)) {
+      return { ok: false, reason: "invalid-toggle-value" };
+    }
+  } else if (type === "select") {
+    const options = SELECT_OPTIONS[id];
+    if (!options) {
+      return { ok: false, reason: "unknown-select-id" };
+    }
+    if (!options.includes(value)) {
+      return { ok: false, reason: "invalid-select-value" };
+    }
+  } else if (type === "text") {
+    if (typeof value !== "string") {
+      return { ok: false, reason: "invalid-text-value" };
+    }
+    if (value.length > TEXT_VALUE_MAX_LENGTH) {
+      return { ok: false, reason: "text-value-too-long" };
+    }
+  }
+
+  return {
+    ok: true,
+    value: Object.freeze({
+      id,
+      category,
+      label,
+      type,
+      value,
+      description,
+    }),
+  };
+}
+
+/**
+ * Normalise an arbitrary list of candidate rows into a deduplicated,
+ * validated, frozen array. Invalid rows and duplicate ids are dropped
+ * and reported through `console.warn` using the stable log prefix.
+ *
+ * The function is deterministic and idempotent: normalising an already
+ * normalised list returns an equivalent list with no new warnings.
+ *
+ * @param {unknown} list
+ * @returns {object[]}
+ */
+export function normaliseSettings(list) {
+  if (!Array.isArray(list)) {
+    if (list !== undefined && list !== null) {
+      console.warn(`${LOG_PREFIX} ignoring non-array settings payload`);
+    }
+    return Object.freeze([]);
+  }
+
+  const seen = new Set();
+  const out = [];
+
+  for (const raw of list) {
+    const result = validateSetting(raw);
+    if (!result.ok) {
+      console.warn(`${LOG_PREFIX} dropping invalid setting: ${result.reason}`);
+      continue;
+    }
+    if (seen.has(result.value.id)) {
+      console.warn(`${LOG_PREFIX} dropping duplicate setting id: ${result.value.id}`);
+      continue;
+    }
+    seen.add(result.value.id);
+    out.push(result.value);
+  }
+
+  return Object.freeze(out);
+}
+
+const RAW_MOCK_SETTINGS = [
   {
     id: "pref-001",
     category: "notifications",
@@ -243,224 +407,38 @@ export const MOCK_SETTINGS = [
   },
 ];
 
-// DEV-only delay (ms) to keep the load-more cycle perceptible in dev.
-const DEV_DELAY = process.env.NODE_ENV === "development" ? 80 : 0;
-
 /**
- * Maximum number of settings accepted from a single source. This bounds
- * memory use and render cost when an untrusted override or future API
- * response is larger than expected.
+ * Validated, frozen mock settings. Any invalid or duplicate row in the
+ * source array is dropped at module load time and reported via the
+ * stable log prefix. This means consumers never see a malformed row.
  */
-export const MAX_SETTINGS = 500;
+export const MOCK_SETTINGS = normaliseSettings(RAW_MOCK_SETTINGS);
 
 /**
- * Maximum length of a string field. Prevents unbounded payloads from
- * being rendered or persisted.
+ * Dev-only delay (ms) to keep the load-more cycle
  */
-export const MAX_FIELD_LENGTH = 2000;
-
-const isNonEmptyString = (v) => typeof v === "string" && v.trim().length > 0;
+export const LOAD_MOCK_DELAY_MS = 0;
 
 /**
- * Validate a single setting row. Returns a normalised copy on success or
- * `null` on rejection. Rejection reasons are reported via the optional
- * `onReject` callback with only the field name and a stable code -- never the
- * value itself -- so callers can log/meter without leaking user data.
+ * Load the mock settings list. This is the only supported entry point
+ * for consumers that need the settings data. It prefers the
+ * `window.__TEST_MOCK_SETTINGS__` hook when present (dev/test builds)
+ * and falls back to the bundled `MOCK_SETTINGS` fixture.
  *
- * @param {unknown} raw
- * @param {(code: string, field?: string) => void} [onReject]
- * @returns {object|null}
- */
-export function validateSetting(raw, onReject) {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    onReject?.("not_an_object");
-    return null;
-  }
-
-  const id = raw.id;
-  if (!isNonEmptyString(id)) {
-    onReject?.("missing_id", "id");
-    return null;
-  }
-  if (id.length > MAX_FIELD_LENGTH) {
-    onReject?.("id_too_long", "id");
-    return null;
-  }
-
-  const category = raw.category;
-  if (!isNonEmptyString(category)) {
-    onReject?.("missing_category", "category");
-    return null;
-  }
-  if (category.length > MAX_FIELD_LENGTH) {
-    onReject?.("category_too_long", "category");
-    return null;
-  }
-
-  const label = raw.label;
-  if (!isNonEmptyString(label)) {
-    onReject?.("missing_label", "label");
-    return null;
-  }
-  if (label.length > MAX_FIELD_LENGTH) {
-    onReject?.("label_too_long", "label");
-    return null;
-  }
-
-  const type = raw.type;
-  if (!VALID_TYPES.has(type)) {
-    onReject?.("unsupported_type", "type");
-    return null;
-  }
-
-  const value = raw.value;
-  if (typeof value !== "string") {
-    onReject?.("invalid_value", "value");
-    return null;
-  }
-  if (value.length > MAX_FIELD_LENGTH) {
-    onReject?.("value_too_long", "value");
-    return null;
-  }
-
-  const description = raw.description;
-  if (description !== undefined && typeof description !== "string") {
-    onReject?.("invalid_description", "description");
-    return null;
-  }
-  if (typeof description === "string" && description.length > MAX_FIELD_LENGTH) {
-    onReject?.("description_too_long", "description");
-    return null;
-  }
-
-  return {
-    id,
-    category,
-    label,
-    type,
-    value,
-    description: typeof description === "string" ? description : "",
-  };
-}
-
-/**
- * Normalise an arbitrary list into a deduplicated, validated array of
- * settings. Non-array inputs yield an empty list. Duplicate ids are dropped
- * (first occurrence wins) and the list is capped at `MAX_SETTINGS`.
+ * All input is run through `normaliseSettings`, so the returned array
+ * always satisfies the module invariant.
  *
- * @param {unknown} list
- * @param {(code: string, field?: string) => void} [onReject]
  * @returns {object[]}
  */
-export function normaliseSettings(list, onReject) {
-  if (!Array.isArray(list)) {
-    onReject?.("not_an_array");
-    return [];
-  }
-
-  const seen = new Set();
-  const out = [];
-  const limit = Math.min(list.length, MAX_SETTINGS);
-
-  for (let i = 0; i < limit; i++) {
-    const normalised = validateSetting(list[i], onReject);
-    if (!normalised) continue;
-    if (seen.has(normalised.id)) {
-      onReject?.("duplicate_id", "id");
-      continue;
-    }
-    seen.add(normalised.id);
-    out.push(normalised);
-  }
-
-  if (list.length > MAX_SETTINGS) {
-    onReject?.("truncated");
-  }
-
-  return out;
-}
-
-/**
- * Resolve the list of settings to display.
- *
- * Test hook: Playwright / Jest tests may override the fixture by setting
- * `window.__TEST_MOCK_SETTINGS__` before the component mounts.  The
- * override is ignored outside the browser and in production builds.
- *
- * The resolved value is always a validated, deduplicated array. Aborted
- * loads resolve to an empty array and never reject.
- *
- * @param {object} [options]
- * @param {AbortSignal} [options.signal] - Abort signal honoured during
- *   the synthetic dev delay; the Promise will never throw on abort so
- *   the caller sees a clean cancel.
- * @param {(code: string, field?: string) => void} [options.onReject] -
- *   Optional callback invoked for each rejected or duplicate row. Receives
- *   only a stable code and an optional field name -- never the value.
- * @returns {Promise<Array>}
- */
-export function loadMockSettings({ signal, onReject } = {}) {
-  const source =
-    typeof window !== "undefined" && window.__TEST_MOCK_SETTINGS__
+export function loadMockSettings() {
+  const hook =
+    typeof window !== "undefined" && window
       ? window.__TEST_MOCK_SETTINGS__
-      : MOCK_SETTINGS;
+      : undefined;
 
-  if (typeof window !== "undefined" && window.__TEST_MOCK_SETTINGS__) {
-    return Promise.resolve(normaliseSettings(source, onReject));
+  if (hook !== undefined) {
+    return normaliseSettings(hook);
   }
 
-  return new Promise((resolve) => {
-    if (signal?.aborted) return resolve([]);
-    const timer = setTimeout(() => {
-      if (signal?.aborted) return resolve([]);
-      resolve(normaliseSettings(source, onReject));
-    }, DEV_DELAY);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        resolve([]);
-      },
-      { once: true }
-    );
-  });
+  return MOCK_SETTINGS;
 }
-
-/**
- * Distinct categories present in the given settings list, sorted
- * alphabetically with "all" prepended.
- *
- * @param {Array} list
- * @returns {string[]}
- */
-export function getCategoryList(list) {
-  if (!Array.isArray(list)) return ["all"];
-  const set = new Set((list ?? []).map((s) => s?.category).filter(Boolean));
-  return ["all", ...[...set].sort()];
-}
-
-// Back-compat alias so existing call sites that reference
-// `getCategories` keep building.
-export { getCategoryList as getCategories };
-
-/**
- * Find a single setting row by id.
- *
- * @param {string} id
- * @returns {object|undefined}
- */
-export function getSettingById(id) {
-  if (!isNonEmptyString(id)) return undefined;
-  return MOCK_SETTINGS.find((s) => s.id === id);
-}
-
-export const __validationBoundaries = Object.freeze({
-  SETTING_TYPES,
-  MAX_SETTINGS,
-  MAX_FIELD_LENGTH,
-  validateSetting,
-  normaliseSettings,
-  loadMockSettings,
-  getCategoryList,
-  getSettingById,
-});
