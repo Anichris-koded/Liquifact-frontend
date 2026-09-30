@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useTransition } from "react";
 import ErrorBanner from "../components/ErrorBanner";
 import { reportError } from "../lib/observability/reportError";
 import { copy } from "./copy/en";
@@ -24,6 +24,8 @@ import { copy } from "./copy/en";
  *   reload. Use it to give users a non-destructive recovery path.
  */
 export default function GlobalError({ error, reset }) {
+  const [isPending, startTransition] = useTransition();
+
   useEffect(() => {
     // Forward to the configurable observability sink.
     // `error.digest` is the server-side identifier so production logs can
@@ -46,9 +48,14 @@ export default function GlobalError({ error, reset }) {
           variant="server"
           title={copy.error.title}
           description={copy.error.description}
-          actionLabel={copy.error.actionLabel}
+          actionLabel={isPending ? "Retrying..." : copy.error.actionLabel}
           previewLabel={copy.error.previewLabel}
-          onAction={reset}
+          onAction={() => {
+            if (isPending) return;
+            startTransition(() => {
+              reset();
+            });
+          }}
         />
       </main>
     </div>

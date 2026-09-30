@@ -164,14 +164,19 @@ describe("GlobalError (app/error.js)", () => {
       expect(reset).toHaveBeenCalledTimes(1);
     });
 
-    it("allows reset to be called multiple times (idempotent)", async () => {
-      const reset = jest.fn();
+    it("prevents concurrent or duplicate reset executions", async () => {
+      let resolveReset;
+      const reset = jest.fn(() => new Promise((resolve) => { resolveReset = resolve; }));
       renderError(makeError(), reset);
       const btn = screen.getByTestId("error-action-btn");
+      
+      // Fire rapid multiple clicks
       await userEvent.click(btn);
       await userEvent.click(btn);
       await userEvent.click(btn);
-      expect(reset).toHaveBeenCalledTimes(3);
+      
+      expect(reset).toHaveBeenCalledTimes(1);
+      resolveReset();
     });
 
     it("does not call reportError again when reset is clicked", async () => {
