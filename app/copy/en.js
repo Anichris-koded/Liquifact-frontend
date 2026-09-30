@@ -696,6 +696,7 @@ export const copy = {
     title: "Something went wrong",
     description: "An unexpected error occurred. We\u2019ve been notified and are looking into it.",
     actionLabel: "Try again",
+    reloadActionLabel: "Reload page",
     previewLabel: "Error boundary",
   },
   toastError: {
