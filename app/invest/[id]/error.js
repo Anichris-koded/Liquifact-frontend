@@ -3,11 +3,18 @@
 import { useEffect } from "react";
 import ErrorBanner from "@/components/ErrorBanner";
 import { copy } from "@/app/copy/en";
+import { reportError } from "@/lib/observability/reportError";
 
 export default function InvoiceDetailError({ error, reset }) {
   useEffect(() => {
-    // Error reporting could be placed here.
-    console.error(error);
+    // Forward to the pluggable observability sink so failures are diagnosable
+    // in production. `digest` is the opaque server-side correlation id; the raw
+    // `error.message` is intentionally NOT rendered because it may contain
+    // internal or sensitive detail.
+    reportError(error, {
+      scope: "invest.invoice_detail",
+      digest: error?.digest,
+    });
   }, [error]);
 
   return (
@@ -16,7 +23,7 @@ export default function InvoiceDetailError({ error, reset }) {
         <ErrorBanner
           variant="server"
           title={copy.error?.title || "Something went wrong"}
-          description={error?.message || copy.error?.description}
+          description={copy.error?.description}
           actionLabel={copy.error?.actionLabel}
           onAction={reset}
         />

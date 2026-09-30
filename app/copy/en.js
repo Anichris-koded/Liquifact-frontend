@@ -38,6 +38,8 @@
  * @property {string} invest.announceFilteredCount
  * @property {string} invest.announceInvoicesLoaded
  * @property {string} invest.announceShowing
+ * @property {string} invest.routeBoundaryTitle - Fallback heading when the invest layout boundary rejects invalid input
+ * @property {string} invest.routeBoundaryDescription - Fallback body for the invest layout boundary
  * @property {Object} invest.fundAmount - Partial funding input copy
  * @property {string} invest.fundAmount.label
  * @property {string} invest.fundAmount.placeholder
@@ -342,8 +344,12 @@ export const copy = {
     announceFilteredCount: "{matched} of {total} invoices match",
     announceInvoicesLoaded: "{count} investable invoices loaded",
     announceShowing: "Showing {shown} of {total} investable invoices",
+    routeBoundaryTitle: "Marketplace unavailable",
+    routeBoundaryDescription:
+      "This part of the marketplace could not be displayed. Please reload the page to try again.",
     invalidCursorTitle: "This result set is no longer valid.",
-    invalidCursorDescription: "This result set is no longer valid. Refresh the marketplace to continue.",
+    invalidCursorDescription:
+      "This result set is no longer valid. Refresh the marketplace to continue.",
     endOfList: "You have reached the end of the list.",
     filters: {
       errorYieldMin: "Minimum yield must be a non-negative number.",
@@ -441,13 +447,11 @@ export const copy = {
         bannerBodyUnknown:
           "Your wallet network could not be read. This invoice requires {invoiceNetwork}. Reconnect your wallet to continue.",
         // Shown when no wallet is connected.
-        bannerBodyDisconnected:
-          "Connect your wallet to {invoiceNetwork} to fund this invoice.",
+        bannerBodyDisconnected: "Connect your wallet to {invoiceNetwork} to fund this invoice.",
         // aria-label for screen readers describing the alert region.
         alertLabel: "Network mismatch warning",
         // Announced to screen readers when the banner first appears.
-        announceMessage:
-          "Network mismatch: please switch your wallet to {invoiceNetwork}.",
+        announceMessage: "Network mismatch: please switch your wallet to {invoiceNetwork}.",
       },
       inlineEdit: {
         editButton: "Edit {field}",
