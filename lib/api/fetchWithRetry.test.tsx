@@ -312,6 +312,69 @@ describe("fetchWithRetry", () => {
       expect(result.status).toBe(500);
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
+
+    it("sends the SAME idempotency key on every non-idempotent retry attempt", async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(500)).mockResolvedValueOnce(mockResponse(200));
+
+      jest.spyOn(global.Math, "random").mockReturnValue(0.1);
+
+      await fetchWithRetry(
+        "/data",
+        { method: "POST" },
+        { maxAttempts: 2, baseDelayMs: 100, retryNonIdempotent: true }
+      );
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const firstKey = mockFetch.mock.calls[0][1].headers["Idempotency-Key"];
+      const secondKey = mockFetch.mock.calls[1][1].headers["Idempotency-Key"];
+      expect(firstKey).toBeTruthy();
+      expect(firstKey).toBe(secondKey);
+
+      global.Math.random.mockRestore();
+    });
+
+    it("preserves a caller-supplied Idempotency-Key header", async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(500)).mockResolvedValueOnce(mockResponse(200));
+
+      jest.spyOn(global.Math, "random").mockReturnValue(0.1);
+
+      await fetchWithRetry(
+        "/data",
+        { method: "POST", headers: { "Idempotency-Key": "caller-key" } },
+        { maxAttempts: 2, baseDelayMs: 100, retryNonIdempotent: true }
+      );
+
+      expect(mockFetch.mock.calls[0][1].headers["Idempotency-Key"]).toBe("caller-key");
+      expect(mockFetch.mock.calls[1][1].headers["Idempotency-Key"]).toBe("caller-key");
+
+      global.Math.random.mockRestore();
+    });
+
+    it("does not retry a non-idempotent request whose body cannot be replayed", async () => {
+      mockFetch.mockResolvedValueOnce(mockResponse(500)).mockResolvedValueOnce(mockResponse(200));
+
+      // jsdom does not always expose ReadableStream globally; provide a
+      // minimal stand-in so the replay guard can be exercised.
+      const originalReadableStream = globalThis.ReadableStream;
+      class FakeReadableStream {}
+      globalThis.ReadableStream = FakeReadableStream as unknown as typeof ReadableStream;
+
+      try {
+        const body = new FakeReadableStream();
+        const result = await fetchWithRetry(
+          "/data",
+          { method: "POST", body: body as unknown as BodyInit },
+          { maxAttempts: 3, baseDelayMs: 0, retryNonIdempotent: true }
+        );
+
+        // A single attempt only — replaying a consumed stream would throw.
+        expect(result.status).toBe(500);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(mockFetch.mock.calls[0][1].body).toBe(body);
+      } finally {
+        globalThis.ReadableStream = originalReadableStream;
+      }
+    });
   });
 
   describe("edge cases", () => {
