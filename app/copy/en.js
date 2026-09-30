@@ -50,8 +50,6 @@ export const copy = {
     contactUrl: "mailto:support@liquifact.com",
     discord: "Discord Community",
     discordUrl: "https://discord.gg/JrGPH4V3",
-  }
-    contact: "Contact Support",
   },
   uploadZone: {
     requirementsTitle: "Upload requirements",
@@ -97,3 +95,48 @@ export const copy = {
       "Wallet is connected to testnet. Please switch to public network.",
   },
 };
+/**
+ * Executes an operation with deterministic failure recovery.
+ * Provides retries, partial completion fallbacks, and safe observability.
+ * 
+ * @param {Function} operation - Async function to execute.
+ * @param {Object} options - { retries, fallback, timeoutMs }
+ * @returns {Promise<any>}
+ */
+export async function executeWithRecovery(operation, options = {}) {
+  if (typeof operation !== 'function') {
+    throw new Error('executeWithRecovery: operation must be a function');
+  }
+
+  const { retries = 3, fallback = undefined, timeoutMs = 5000 } = options;
+  let attempt = 0;
+  
+  while (attempt <= retries) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    try {
+      const result = await Promise.race([
+        operation(),
+        new Promise((_, reject) => {
+          controller.signal.addEventListener('abort', () => reject(new Error('Timeout')));
+        })
+      ]);
+      clearTimeout(timeoutId);
+      return result;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      attempt++;
+      if (attempt > retries) {
+        // Log diagnosable error without exposing sensitive data payload
+        console.error('[Recovery] Operation failed after retries:', error.message || 'Unknown error');
+        if (fallback !== undefined) {
+          return fallback;
+        }
+        throw new Error('Deterministic failure recovery exhausted: ' + (error.message || 'Unknown'));
+      }
+      // Simple backoff
+      await new Promise(r => setTimeout(r, 10 * attempt));
+    }
+  }
+}
