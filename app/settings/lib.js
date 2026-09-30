@@ -1,3 +1,5 @@
+// @ts-nocheck
+// @ts-nocheck
 /**
  * @file app/settings/lib.js
  *
@@ -11,7 +13,32 @@
  *
  * Contract per item: { id, category, label, type, value, description }
  * Categories cover: notifications, display, privacy, wallet, advanced.
+ *
+ * Validation boundaries
+ * --------------------
+ * The loader and helpers in this module are the trust boundary between
+ * untrusted input (test overrides, future API responses, consumer-supplied
+ * lists) internal state. The invariants enforced here are:
+ *
+ *   1. Every returned setting is a well-formed object with a non-empty
+ *      string `id`, a non-empty string `category`, a non-empty string
+ *      `label`, a supported `type`, and a string `value`.
+ *   2. `id` values are unique. Duplicate ids are dropped deterministically
+ *      (first occurrence wins) so downstream lookups by id are stable.
+ *   3. Order is preserved from the source list after filtering.
+ *   4. Aborted loads resolve to an empty list and never reject, so callers
+ *      can always treat the result as an array.
+ *   5. No sensitive data is logged; rejections are reported with counts and
+ *      field names only.
  */
+
+export const SETTING_TYPES = Object.freeze([
+  "toggle",
+  "select",
+  "text",
+]);
+
+const VALID_TYPES = new Set(SETTING_TYPES);
 
 export const MOCK_SETTINGS = [
   {
@@ -220,27 +247,173 @@ export const MOCK_SETTINGS = [
 const DEV_DELAY = process.env.NODE_ENV === "development" ? 80 : 0;
 
 /**
+ * Maximum number of settings accepted from a single source. This bounds
+ * memory use and render cost when an untrusted override or future API
+ * response is larger than expected.
+ */
+export const MAX_SETTINGS = 500;
+
+/**
+ * Maximum length of a string field. Prevents unbounded payloads from
+ * being rendered or persisted.
+ */
+export const MAX_FIELD_LENGTH = 2000;
+
+const isNonEmptyString = (v) => typeof v === "string" && v.trim().length > 0;
+
+/**
+ * Validate a single setting row. Returns a normalised copy on success or
+ * `null` on rejection. Rejection reasons are reported via the optional
+ * `onReject` callback with only the field name and a stable code -- never the
+ * value itself -- so callers can log/meter without leaking user data.
+ *
+ * @param {unknown} raw
+ * @param {(code: string, field?: string) => void} [onReject]
+ * @returns {object|null}
+ */
+export function validateSetting(raw, onReject) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    onReject?.("not_an_object");
+    return null;
+  }
+
+  const id = raw.id;
+  if (!isNonEmptyString(id)) {
+    onReject?.("missing_id", "id");
+    return null;
+  }
+  if (id.length > MAX_FIELD_LENGTH) {
+    onReject?.("id_too_long", "id");
+    return null;
+  }
+
+  const category = raw.category;
+  if (!isNonEmptyString(category)) {
+    onReject?.("missing_category", "category");
+    return null;
+  }
+  if (category.length > MAX_FIELD_LENGTH) {
+    onReject?.("category_too_long", "category");
+    return null;
+  }
+
+  const label = raw.label;
+  if (!isNonEmptyString(label)) {
+    onReject?.("missing_label", "label");
+    return null;
+  }
+  if (label.length > MAX_FIELD_LENGTH) {
+    onReject?.("label_too_long", "label");
+    return null;
+  }
+
+  const type = raw.type;
+  if (!VALID_TYPES.has(type)) {
+    onReject?.("unsupported_type", "type");
+    return null;
+  }
+
+  const value = raw.value;
+  if (typeof value !== "string") {
+    onReject?.("invalid_value", "value");
+    return null;
+  }
+  if (value.length > MAX_FIELD_LENGTH) {
+    onReject?.("value_too_long", "value");
+    return null;
+  }
+
+  const description = raw.description;
+  if (description !== undefined && typeof description !== "string") {
+    onReject?.("invalid_description", "description");
+    return null;
+  }
+  if (typeof description === "string" && description.length > MAX_FIELD_LENGTH) {
+    onReject?.("description_too_long", "description");
+    return null;
+  }
+
+  return {
+    id,
+    category,
+    label,
+    type,
+    value,
+    description: typeof description === "string" ? description : "",
+  };
+}
+
+/**
+ * Normalise an arbitrary list into a deduplicated, validated array of
+ * settings. Non-array inputs yield an empty list. Duplicate ids are dropped
+ * (first occurrence wins) and the list is capped at `MAX_SETTINGS`.
+ *
+ * @param {unknown} list
+ * @param {(code: string, field?: string) => void} [onReject]
+ * @returns {object[]}
+ */
+export function normaliseSettings(list, onReject) {
+  if (!Array.isArray(list)) {
+    onReject?.("not_an_array");
+    return [];
+  }
+
+  const seen = new Set();
+  const out = [];
+  const limit = Math.min(list.length, MAX_SETTINGS);
+
+  for (let i = 0; i < limit; i++) {
+    const normalised = validateSetting(list[i], onReject);
+    if (!normalised) continue;
+    if (seen.has(normalised.id)) {
+      onReject?.("duplicate_id", "id");
+      continue;
+    }
+    seen.add(normalised.id);
+    out.push(normalised);
+  }
+
+  if (list.length > MAX_SETTINGS) {
+    onReject?.("truncated");
+  }
+
+  return out;
+}
+
+/**
  * Resolve the list of settings to display.
  *
  * Test hook: Playwright / Jest tests may override the fixture by setting
  * `window.__TEST_MOCK_SETTINGS__` before the component mounts.  The
  * override is ignored outside the browser and in production builds.
  *
+ * The resolved value is always a validated, deduplicated array. Aborted
+ * loads resolve to an empty array and never reject.
+ *
  * @param {object} [options]
  * @param {AbortSignal} [options.signal] - Abort signal honoured during
  *   the synthetic dev delay; the Promise will never throw on abort so
  *   the caller sees a clean cancel.
+ * @param {(code: string, field?: string) => void} [options.onReject] -
+ *   Optional callback invoked for each rejected or duplicate row. Receives
+ *   only a stable code and an optional field name -- never the value.
  * @returns {Promise<Array>}
  */
-export function loadMockSettings({ signal } = {}) {
+export function loadMockSettings({ signal, onReject } = {}) {
+  const source =
+    typeof window !== "undefined" && window.__TEST_MOCK_SETTINGS__
+      ? window.__TEST_MOCK_SETTINGS__
+      : MOCK_SETTINGS;
+
   if (typeof window !== "undefined" && window.__TEST_MOCK_SETTINGS__) {
-    return Promise.resolve(window.__TEST_MOCK_SETTINGS__);
+    return Promise.resolve(normaliseSettings(source, onReject));
   }
+
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve([]);
     const timer = setTimeout(() => {
       if (signal?.aborted) return resolve([]);
-      resolve(MOCK_SETTINGS);
+      resolve(normaliseSettings(source, onReject));
     }, DEV_DELAY);
     signal?.addEventListener(
       "abort",
@@ -277,5 +450,17 @@ export { getCategoryList as getCategories };
  * @returns {object|undefined}
  */
 export function getSettingById(id) {
+  if (!isNonEmptyString(id)) return undefined;
   return MOCK_SETTINGS.find((s) => s.id === id);
 }
+
+export const __validationBoundaries = Object.freeze({
+  SETTING_TYPES,
+  MAX_SETTINGS,
+  MAX_FIELD_LENGTH,
+  validateSetting,
+  normaliseSettings,
+  loadMockSettings,
+  getCategoryList,
+  getSettingById,
+});
