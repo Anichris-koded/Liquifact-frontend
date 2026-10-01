@@ -89,6 +89,20 @@ import { TRUSTED_WALLET_INSTALL_URL } from "./constants";
  * @property {string} invest.detail.densityCompactAriaLabel
  * @property {string} invest.detail.densityComfortableAriaLabel
  * @property {string} invest.detail.densityCurrentAriaLabel
+ * @property {Object} invest.detail.funding - Funding submission action copy
+ * @property {string} invest.detail.funding.successMsg
+ * @property {string} invest.detail.funding.successTitle
+ * @property {string} invest.detail.funding.failureMsg
+ * @property {string} invest.detail.funding.failureTitle
+ * @property {string} invest.detail.funding.timeoutMsg
+ * @property {string} invest.detail.funding.timeoutTitle
+ * @property {string} invest.detail.funding.conflictMsg
+ * @property {string} invest.detail.funding.conflictTitle
+ * @property {string} invest.detail.funding.walletRejectMsg
+ * @property {string} invest.detail.funding.walletRejectTitle
+ * @property {string} invest.detail.funding.pendingButton
+ * @property {string} invest.detail.funding.retryButton
+ * @property {string} invest.detail.funding.blockedByTabMsg
  * @property {Object} invest.detail.networkMismatch - Network mismatch banner copy
  * @property {string} invest.detail.networkMismatch.bannerTitle
  * @property {string} invest.detail.networkMismatch.bannerBody
@@ -429,6 +443,26 @@ export const copy = deepFreeze({
         alertLabel: "Network mismatch warning",
         // Announced to screen readers when the banner first appears.
         announceMessage: "Network mismatch: please switch your wallet to {invoiceNetwork}.",
+      },
+      /**
+       * Funding submission copy — used by FundActions.jsx.
+       * {amount} and {currency} are replaced at runtime.
+       */
+      funding: {
+        successMsg: "Funding request for {amount} {currency} submitted.",
+        successTitle: "Funding submitted",
+        failureMsg: "Funding request for {amount} {currency} failed.",
+        failureTitle: "Funding failed",
+        timeoutMsg: "The funding request timed out. Please retry.",
+        timeoutTitle: "Funding timed out",
+        conflictMsg: "This invoice has already been funded. Retry to confirm status.",
+        conflictTitle: "Funding conflict",
+        walletRejectMsg: "Funding was declined by your wallet.",
+        walletRejectTitle: "Wallet rejected",
+        pendingButton: "Funding\u2026",
+        retryButton: "Retry funding",
+        blockedByTabMsg:
+          "Another tab is currently processing this invoice. Please wait for it to finish.",
       },
       inlineEdit: {
         editButton: "Edit {field}",

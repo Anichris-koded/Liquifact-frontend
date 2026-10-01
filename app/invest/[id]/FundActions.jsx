@@ -39,6 +39,7 @@ import { useMarketplace } from "@/app/invest/MarketplaceContext";
 import { copy } from "@/app/copy/en";
 import NetworkMismatchBanner from "@/components/NetworkMismatchBanner";
 import { useWalletNetworkGuard } from "@/lib/hooks/useWalletNetworkGuard";
+import { useFundingSubmit, FUNDING_SUBMIT_STATES } from "@/lib/hooks/useFundingSubmit";
 
 const detail = copy.invest.detail;
 const fundingCopy = detail.funding;
@@ -327,6 +328,19 @@ export default function FundActions({ id, status, maxAmount, currency, yieldValu
           >
             {fundingCopy.retryButton}
           </button>
+        </div>
+      )}
+
+      {/* Blocked-by-tab warning — shown when another tab has acquired the
+          cross-tab lock for this invoice. Uses role=alert so screen readers
+          announce it immediately without waiting for a polite live region. */}
+      {isBlocked && (
+        <div
+          role="alert"
+          data-testid="fund-blocked-by-tab"
+          className="no-print mb-4 rounded-xl border border-amber-500/40 bg-amber-900/20 px-4 py-3 text-sm text-amber-200"
+        >
+          {fundingCopy.blockedByTabMsg}
         </div>
       )}
 
