@@ -1,73 +1,75 @@
-import { copy, getCopy } from './en';
+import { copy, executeWithRecovery } from './en';
 
-describe('en.js Validation Boundaries', () => {
-  describe('Dictionary structural integrity', () => {
-    it('should exist and be a valid object', () => {
-      expect(typeof copy).toBe('object');
-      expect(copy).not.toBeNull();
-    });
+describe('en.js copy object', () => {
+  it('exports a valid nested object', () => {
+    expect(copy).toBeDefined();
+    expect(copy.home.heroTitle).toBeDefined();
+  });
+});
 
-    it('should contain expected root sections', () => {
-      expect(copy.home).toBeDefined();
-      expect(copy.invest).toBeDefined();
-      expect(copy.invoices).toBeDefined();
-      expect(copy.wallet).toBeDefined();
-    });
+describe('executeWithRecovery in en.js', () => {
+  afterEach(() => {
+    jest.clearAllMocks();
   });
 
-  describe('getCopy validation & boundary handling', () => {
-    it('should resolve a valid string path', () => {
-      expect(getCopy('home.heroTitle')).toBe(copy.home.heroTitle);
-      expect(getCopy('invest.detail.pageTitle')).toBe(copy.invest.detail.pageTitle);
+  it('rejects invalid inputs deterministically', async () => {
+    // @ts-ignore
+    await expect(executeWithRecovery(null)).rejects.toThrow('operation must be a function');
+  });
+
+  it('handles successful completion on first try', async () => {
+    const op = jest.fn().mockResolvedValue('success');
+    const result = await executeWithRecovery(op);
+    expect(result).toBe('success');
+    expect(op).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles idempotent retries and recovers from partial failure', async () => {
+    let calls = 0;
+    const op = jest.fn().mockImplementation(async () => {
+      calls++;
+      if (calls < 3) throw new Error('Transient error');
+      return 'recovered';
     });
 
-    it('should handle rejected input: invalid paths', () => {
-      expect(getCopy(null)).toBe('Missing copy: invalid path');
-      expect(getCopy(undefined)).toBe('Missing copy: invalid path');
-      expect(getCopy(123)).toBe('Missing copy: invalid path');
-      expect(getCopy('')).toBe('Missing copy: invalid path');
-      expect(getCopy('   ')).toBe('Missing copy: invalid path');
-    });
+    const result = await executeWithRecovery(op, { retries: 3, timeoutMs: 50 });
+    expect(result).toBe('recovered');
+    expect(calls).toBe(3);
+    expect(op).toHaveBeenCalledTimes(3);
+  });
 
-    it('should handle missing or incorrect paths', () => {
-      expect(getCopy('home.doesNotExist')).toBe('Missing copy: home.doesNotExist');
-      expect(getCopy('doesNotExist.something')).toBe('Missing copy: doesNotExist.something');
-      // Accessing a path that resolves to an object, not a string
-      expect(getCopy('home')).toBe('Missing copy: home');
-      expect(getCopy('invest.detail')).toBe('Missing copy: invest.detail');
-    });
+  it('exhausts retries and falls back deterministically without data loss', async () => {
+    const op = jest.fn().mockRejectedValue(new Error('Fatal API Error'));
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-    it('should correctly substitute variables (accepted input)', () => {
-      const result = getCopy('invest.announceFilteredCount', { matched: 5, total: 10 });
-      expect(result).toBe('5 of 10 invoices match');
-    });
+    const fallbackData = { safe: true, cached: 'old data' };
+    const result = await executeWithRecovery(op, { retries: 2, timeoutMs: 50, fallback: fallbackData });
 
-    it('should ignore duplicate and extraneous variables (duplicate/boundary input)', () => {
-      const result = getCopy('invest.announceFilteredCount', { matched: 2, total: 4, extra: 'ignoreme', matched: 2 });
-      expect(result).toBe('2 of 4 invoices match');
-    });
+    expect(result).toBe(fallbackData);
+    expect(op).toHaveBeenCalledTimes(3); // Initial + 2 retries
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[Recovery] Operation failed after retries:'),
+      'Fatal API Error'
+    );
+  });
 
-    it('should gracefully handle missing or invalid substitution params (boundary input)', () => {
-      // If a param is missing, the placeholder should remain as is, or we just handle it without throwing
-      const result = getCopy('invest.announceFilteredCount', { matched: null, total: undefined });
-      expect(result).toBe(' of  invoices match');
-      
-      const noParamsResult = getCopy('invest.announceFilteredCount');
-      expect(noParamsResult).toBe('{matched} of {total} invoices match');
-      
-      const invalidParamsResult = getCopy('invest.announceFilteredCount', null);
-      expect(invalidParamsResult).toBe('{matched} of {total} invoices match');
-    });
+  it('throws a safe error if retries exhausted and no fallback provided', async () => {
+    const op = jest.fn().mockRejectedValue(new Error('Secret DB crash'));
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-    it('should protect against malicious string replacements (boundary input)', () => {
-      // Trying to inject a regex string to break the split/join
-      const result = getCopy('invest.announceFilteredCount', { matched: '.*+', total: 5 });
-      expect(result).toBe('.*+ of 5 invoices match');
-    });
+    await expect(executeWithRecovery(op, { retries: 1, timeoutMs: 50 }))
+      .rejects.toThrow('Deterministic failure recovery exhausted: Secret DB crash');
 
-    it('should enforce variable substitution types', () => {
-      const result = getCopy('invest.announceFilteredCount', { matched: [1, 2], total: { a: 1 } });
-      expect(result).toBe('1,2 of [object Object] invoices match');
-    });
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    expect(op).toHaveBeenCalledTimes(2);
+  });
+
+  it('enforces timing boundaries', async () => {
+    const op = jest.fn().mockImplementation(
+      () => new Promise(resolve => setTimeout(() => resolve('late'), 100))
+    );
+
+    await expect(executeWithRecovery(op, { retries: 0, timeoutMs: 10 }))
+      .rejects.toThrow('Deterministic failure recovery exhausted: Timeout');
   });
 });

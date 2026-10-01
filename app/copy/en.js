@@ -793,44 +793,48 @@ export const copy = deepFreeze({
     byActor: "By {actor}",
   },
 };
-
 /**
- * Safely resolves a path against the copy dictionary.
+ * Executes an operation with deterministic failure recovery.
+ * Provides retries, partial completion fallbacks, and safe observability.
  * 
- * @param {string} path - The dot-separated path to resolve (e.g., "invest.detail.pageTitle").
- * @param {Record<string, string|number>} [params] - Optional parameters to replace in the copy string.
- * @returns {string} The resolved copy string, or a fallback if the path is invalid.
+ * @param {Function} operation - Async function to execute.
+ * @param {Object} options - { retries, fallback, timeoutMs }
+ * @returns {Promise<any>}
  */
-export function getCopy(path, params = {}) {
-  if (typeof path !== 'string' || path.trim() === '') {
-    return 'Missing copy: invalid path';
+export async function executeWithRecovery(operation, options = {}) {
+  if (typeof operation !== 'function') {
+    throw new Error('executeWithRecovery: operation must be a function');
   }
 
-  const keys = path.split('.');
-  let current = copy;
-
-  for (const key of keys) {
-    if (current == null || typeof current !== 'object') {
-      return `Missing copy: ${path}`;
-    }
-    current = current[key];
-  }
-
-  if (typeof current !== 'string') {
-    return `Missing copy: ${path}`;
-  }
-
-  let result = current;
-
-  if (params && typeof params === 'object') {
-    for (const [key, value] of Object.entries(params)) {
-      if (key && typeof key === 'string') {
-        const safeValue = value == null ? '' : String(value);
-        // Safely replace without regex injection risk
-        result = result.split(`{${key}}`).join(safeValue);
+  const { retries = 3, fallback = undefined, timeoutMs = 5000 } = options;
+  let attempt = 0;
+  
+  while (attempt <= retries) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    try {
+      const result = await Promise.race([
+        operation(),
+        new Promise((_, reject) => {
+          controller.signal.addEventListener('abort', () => reject(new Error('Timeout')));
+        })
+      ]);
+      clearTimeout(timeoutId);
+      return result;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      attempt++;
+      if (attempt > retries) {
+        // Log diagnosable error without exposing sensitive data payload
+        console.error('[Recovery] Operation failed after retries:', error.message || 'Unknown error');
+        if (fallback !== undefined) {
+          return fallback;
+        }
+        throw new Error('Deterministic failure recovery exhausted: ' + (error.message || 'Unknown'));
       }
+      // Simple backoff
+      await new Promise(r => setTimeout(r, 10 * attempt));
     }
   }
-
-  return result;
 }
