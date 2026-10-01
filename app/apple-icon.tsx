@@ -15,11 +15,6 @@ export const contentType = "image/png";
  */
 export default function AppleIcon() {
   try {
-    // Validate size invariant
-    if (!size || size.width !== 180 || size.height !== 180) {
-      throw new Error("Invalid size invariant for AppleIcon");
-    }
-
     return new ImageResponse(
       <div
         style={{
@@ -42,8 +37,25 @@ export default function AppleIcon() {
       }
     );
   } catch (error) {
-    // Fallback response for invariant violations or rendering errors
-    console.error("AppleIcon generation failed:", error);
-    return new Response("Failed to generate icon", { status: 500 });
+    console.error("Failed to generate apple-icon:", error);
+    return new ImageResponse(
+      <div
+        style={{
+          fontSize: 100,
+          background: "#020617",
+          color: "#22d3ee",
+          width: "100%",
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        L
+      </div>,
+      {
+        ...size,
+      }
+    );
   }
 }
