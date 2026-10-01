@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "jest-axe";
 import NavMenu from "./NavMenu";
@@ -20,6 +20,13 @@ jest.mock("next/link", () => {
   return MockLink;
 });
 
+jest.mock("./WalletStatusLazy", () => ({
+  __esModule: true,
+  default: function MockWalletStatusLazy() {
+    return <button type="button">Connect Wallet</button>;
+  },
+}));
+
 describe("NavMenu", () => {
   beforeEach(() => {
     mockPathname.mockReturnValue("/");
@@ -39,17 +46,14 @@ describe("NavMenu", () => {
 
     it("renders the wallet button", () => {
       render(<NavMenu />);
-      expect(screen.getByRole("button", { name: /connect wallet/i })).toBeInTheDocument();
-    });
-
-    it("renders a custom wallet label", () => {
-      render(<NavMenu walletLabel="My Wallet" />);
-      expect(screen.getByRole("button", { name: /my wallet/i })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: /connect wallet/i })).toHaveLength(2);
     });
 
     it("mobile menu is hidden by default", () => {
       render(<NavMenu />);
-      expect(screen.queryByRole("navigation", { name: /mobile navigation/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("navigation", { name: /mobile navigation/i })
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -68,6 +72,18 @@ describe("NavMenu", () => {
       expect(screen.getByRole("navigation", { name: /mobile navigation/i })).toBeInTheDocument();
     });
 
+    it("moves focus to the first mobile link when the menu opens", async () => {
+      const user = userEvent.setup();
+      render(<NavMenu />);
+
+      await user.click(screen.getByRole("button", { name: /open navigation menu/i }));
+
+      const mobileNav = screen.getByRole("navigation", { name: /mobile navigation/i });
+      await waitFor(() => {
+        expect(within(mobileNav).getByRole("link", { name: /^home$/i })).toHaveFocus();
+      });
+    });
+
     it("sets aria-expanded=true when open", async () => {
       const user = userEvent.setup();
       render(<NavMenu />);
@@ -82,7 +98,9 @@ describe("NavMenu", () => {
       const toggle = screen.getByRole("button", { name: /open navigation menu/i });
       await user.click(toggle);
       await user.click(screen.getByRole("button", { name: /close navigation menu/i }));
-      expect(screen.queryByRole("navigation", { name: /mobile navigation/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("navigation", { name: /mobile navigation/i })
+      ).not.toBeInTheDocument();
     });
 
     it("toggle button has aria-controls pointing to mobile-menu", async () => {
@@ -92,6 +110,20 @@ describe("NavMenu", () => {
       await user.click(toggle);
       expect(toggle).toHaveAttribute("aria-controls", "mobile-menu");
       expect(document.getElementById("mobile-menu")).toBeInTheDocument();
+    });
+
+    it("moves focus into the mobile menu when opened from the keyboard", async () => {
+      const user = userEvent.setup();
+      render(<NavMenu />);
+      const toggle = screen.getByRole("button", { name: /open navigation menu/i });
+
+      toggle.focus();
+      await user.keyboard("{Enter}");
+
+      const mobileNav = screen.getByRole("navigation", { name: /mobile navigation/i });
+      await waitFor(() => {
+        expect(within(mobileNav).getByRole("link", { name: /^home$/i })).toHaveFocus();
+      });
     });
   });
 
@@ -105,7 +137,9 @@ describe("NavMenu", () => {
       fireEvent.keyDown(document, { key: "Escape" });
 
       await waitFor(() => {
-        expect(screen.queryByRole("navigation", { name: /mobile navigation/i })).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("navigation", { name: /mobile navigation/i })
+        ).not.toBeInTheDocument();
       });
     });
 
@@ -170,18 +204,30 @@ describe("NavMenu", () => {
       rerender(<NavMenu />);
 
       await waitFor(() => {
-        expect(screen.queryByRole("navigation", { name: /mobile navigation/i })).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("navigation", { name: /mobile navigation/i })
+        ).not.toBeInTheDocument();
       });
     });
   });
 
-  describe("wallet button", () => {
-    it("calls onWalletClick when wallet button is clicked", async () => {
+  describe("click outside", () => {
+    it("closes the mobile menu and returns focus to the toggle", async () => {
       const user = userEvent.setup();
-      const handleClick = jest.fn();
-      render(<NavMenu onWalletClick={handleClick} />);
-      await user.click(screen.getByRole("button", { name: /connect wallet/i }));
-      expect(handleClick).toHaveBeenCalledTimes(1);
+      render(<NavMenu />);
+      const toggle = screen.getByRole("button", { name: /open navigation menu/i });
+
+      await user.click(toggle);
+      expect(screen.getByRole("navigation", { name: /mobile navigation/i })).toBeInTheDocument();
+
+      fireEvent.mouseDown(document.body);
+
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("navigation", { name: /mobile navigation/i })
+        ).not.toBeInTheDocument();
+        expect(toggle).toHaveFocus();
+      });
     });
   });
 
