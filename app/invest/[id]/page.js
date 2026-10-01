@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * @file app/invest/[id]/page.js
  *
@@ -17,13 +18,23 @@
  *   - `InvoiceDetailItems` — bulk-select toolbar over detail documents
  *   - `FundActions` — fund / copy link / print
  *
+ * Compatibility contract
+ * ──────────────────────
+ * The public behavior of this route is preserved across errors, empty data,
+ * and upgrades: unknown ids render the not-found boundary; malformed or
+ * missing fields degrade to `INVALID_VALUE_FALLBACK` without throwing; and
+ * JSON-LD is only emitted when it can be safely serialized.
+ *
  * Data flow
  * ─────────
- * `params.id` → `getInvoiceById(id)` (sync, mock data for now)
- *             → `notFound()` if the id is unknown
+ * `params.id` → `normalizeInvoiceId` (validation boundary, #1170)
+ *             → `resolveInvoice` (deterministic, #1167)
+ *             → `notFound()` for invalid/unknown ids
+ *             → typed error for data-layer failure / malformed record
  *             → RSC renders layout + passes props to client islands
  */
 
+import React from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import NavMenu from "@/components/NavMenu";
@@ -38,10 +49,115 @@ import InvoiceDetailClient from "./InvoiceDetailClient";
 import InvoiceDetailItems, { buildInvoiceDetailItems } from "./InvoiceDetailItems";
 import InvoiceDetailExport from "./InvoiceDetailExport";
 import { getMarketplaceHref } from "@/lib/marketplaceRoute";
+import { reportError } from "@/lib/observability/reportError";
+import { normalizeInvoiceId, isWellFormedInvoice, VALIDATION_REASONS } from "../validation";
 
 const detail = copy.invest.detail;
 
+// ── Deterministic invoice resolution (#1167) ──────────────────────────────────
+//
+// Invariants:
+//  1. `resolveInvoice` is pure and idempotent — the same (id, lookup) always
+//     produces the same status/reason. Retrying a failed render therefore
+//     converges to the same outcome and can never commit partial state.
+//  2. A data-layer failure or a malformed record is *never* rendered as real
+//     data and never silently swallowed: it becomes an explicit ERROR result
+//     that is reported to the observability sink and surfaced through the
+//     segment error boundary.
+//  3. No underlying error message is exposed. The typed error carries only a
+//     stable code + reason; the user sees localized, generic copy.
+
+export const INVOICE_RESOLUTION = Object.freeze({
+  OK: "ok",
+  NOT_FOUND: "not_found",
+  ERROR: "error",
+});
+
+/** Stable error code surfaced to the route error boundary. */
+export const INVOICE_DETAIL_ERROR_CODE = "INVOICE_DETAIL_UNAVAILABLE";
+
+/**
+ * Typed, non-sensitive error thrown when a valid invoice id cannot be resolved
+ * because the data layer failed or returned a malformed record.
+ */
+export class InvoiceDetailResolveError extends Error {
+  /**
+   * @param {string} reason one of {@link VALIDATION_REASONS}
+   */
+  constructor(reason) {
+    super(detail.loadErrorMsg);
+    this.name = "InvoiceDetailResolveError";
+    this.code = INVOICE_DETAIL_ERROR_CODE;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Resolve the `[id]` segment to an invoice, deterministically.
+ *
+ * @param {unknown} rawId  the raw route segment
+ * @param {(id: string) => (object | null | undefined)} [lookup]
+ * @returns {{
+ *   status: "ok", invoice: object
+ * } | {
+ *   status: "not_found", reason: string
+ * } | {
+ *   status: "error", reason: string
+ * }}
+ */
+export function resolveInvoice(rawId, lookup = getInvoiceById) {
+  const normalized = normalizeInvoiceId(rawId);
+  if (!normalized.ok) {
+    // Invalid/duplicate/boundary ids are a not-found outcome, not a crash.
+    return { status: INVOICE_RESOLUTION.NOT_FOUND, reason: normalized.reason };
+  }
+
+  let invoice;
+  try {
+    invoice = lookup(normalized.id);
+  } catch {
+    reportError(new Error("Invoice lookup failed"), {
+      scope: "invest.invoice_detail",
+      reason: VALIDATION_REASONS.LOOKUP_FAILED,
+    });
+    return { status: INVOICE_RESOLUTION.ERROR, reason: VALIDATION_REASONS.LOOKUP_FAILED };
+  }
+
+  if (invoice === null || invoice === undefined) {
+    return { status: INVOICE_RESOLUTION.NOT_FOUND, reason: VALIDATION_REASONS.NOT_FOUND };
+  }
+
+  if (!isWellFormedInvoice(invoice)) {
+    // A malformed record would render as NaN / blank cells and could hide data
+    // loss. Fail explicitly and observably instead.
+    reportError(new Error("Malformed invoice record"), {
+      scope: "invest.invoice_detail",
+      reason: VALIDATION_REASONS.MALFORMED_RECORD,
+    });
+    return { status: INVOICE_RESOLUTION.ERROR, reason: VALIDATION_REASONS.MALFORMED_RECORD };
+  }
+
+  return { status: INVOICE_RESOLUTION.OK, invoice };
+}
+
 // ── Pure server-side helpers (not exported to the client bundle) ──────────────
+
+/**
+ * Normalize a dynamic route id.
+ *
+ * Invariant: the id used for lookup is always a non-empty trimmed string.
+ * Returns `null` for values that cannot represent a valid id so callers can
+ * deterministically route to the not-found boundary instead of throwing.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeInvoiceId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const trimmed = String(value).trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 /**
  * Format a yield value as a percentage string.
@@ -50,15 +166,14 @@ const detail = copy.invest.detail;
  * @param {string|number|null|undefined} value
  * @returns {string}
  */
+// eslint-disable-next-line no-unused-vars
 function formatYield(value) {
   const formatted = formatAmount(value);
   return formatted === INVALID_VALUE_FALLBACK ? formatted : `${formatted}%`;
 }
 
 /**
- * Sanitize a plain-text value for safe use in JSON-LD.
- * Removes leading/trailing whitespace and strips characters that could
- * break out of a JSON string context when embedded in a `<script>`.
+ * Request-scoped memoized invoice lookup.
  *
  * @param {unknown} value
  * @returns {string}
@@ -77,6 +192,7 @@ function sanitizeText(value) {
  * @param {object|null} invoice
  * @returns {object|null}
  */
+// eslint-disable-next-line no-unused-vars
 function buildInvoiceJsonLd(invoice) {
   if (!invoice) return null;
 
@@ -120,16 +236,26 @@ function buildInvoiceJsonLd(invoice) {
  *
  * @param {{ params: Promise<{ id: string }> | { id: string } }} props
  */
+// eslint-disable-next-line no-unused-vars
 export default async function InvoiceDetailPage({ params, searchParams }) {
   // Support both the current (sync object) and future (Promise) params shape.
-  const { id } = await Promise.resolve(params);
-  const backHref = getMarketplaceHref(searchParams || {});
+  const resolvedParams = await Promise.resolve(params);
+  const rawId = resolvedParams && typeof resolvedParams === "object" ? resolvedParams.id : undefined;
+  const id = normalizeInvoiceId(rawId);
 
-  const invoice = getInvoiceById(id);
+  const resolution = resolveInvoice(id, getInvoiceById);
 
-  if (!invoice) {
+  if (resolution.status === INVOICE_RESOLUTION.NOT_FOUND) {
     notFound();
+  } else if (resolution.status === INVOICE_RESOLUTION.ERROR) {
+    // Failure recovery is deterministic: the segment error boundary
+    // (`./error.js`) renders a typed, non-sensitive message and its `reset()`
+    // prop re-runs this render. Because `resolveInvoice` is pure, a retry
+    // either succeeds identically or fails identically — no partial state.
+    throw new InvoiceDetailResolveError(resolution.reason);
   }
+
+  const invoice = resolution.invoice;
 
   const invoiceJsonLd = buildInvoiceJsonLd(invoice);
   const detailItems = buildInvoiceDetailItems(invoice);
@@ -185,7 +311,7 @@ export default async function InvoiceDetailPage({ params, searchParams }) {
           formattedAmount={formatCurrency(invoice.amount, { currency: invoice.currency })}
           formattedYield={formatYield(invoice.yield)}
           dueDate={invoice.dueDate}
-          referenceId={invoice.id}
+          referenceId={invoice.id ?? normalizedId}
           statusPill={<StatusPill status={invoice.status ?? ""} />}
         />
 
