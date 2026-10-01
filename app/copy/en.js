@@ -89,20 +89,22 @@ import { TRUSTED_WALLET_INSTALL_URL } from "./constants";
  * @property {string} invest.detail.densityCompactAriaLabel
  * @property {string} invest.detail.densityComfortableAriaLabel
  * @property {string} invest.detail.densityCurrentAriaLabel
- * @property {Object} invest.detail.funding - Funding submission action copy
- * @property {string} invest.detail.funding.successMsg
- * @property {string} invest.detail.funding.successTitle
- * @property {string} invest.detail.funding.failureMsg
- * @property {string} invest.detail.funding.failureTitle
- * @property {string} invest.detail.funding.timeoutMsg
- * @property {string} invest.detail.funding.timeoutTitle
- * @property {string} invest.detail.funding.conflictMsg
- * @property {string} invest.detail.funding.conflictTitle
- * @property {string} invest.detail.funding.walletRejectMsg
- * @property {string} invest.detail.funding.walletRejectTitle
+ * @property {Object} invest.detail.funding - Funding submission lifecycle copy
  * @property {string} invest.detail.funding.pendingButton
- * @property {string} invest.detail.funding.retryButton
+ * @property {string} invest.detail.funding.successTitle
+ * @property {string} invest.detail.funding.successMsg
+ * @property {string} invest.detail.funding.failureTitle
+ * @property {string} invest.detail.funding.failureMsg
+ * @property {string} invest.detail.funding.timeoutTitle
+ * @property {string} invest.detail.funding.timeoutMsg
+ * @property {string} invest.detail.funding.conflictTitle
+ * @property {string} invest.detail.funding.conflictMsg
+ * @property {string} invest.detail.funding.walletRejectTitle
+ * @property {string} invest.detail.funding.walletRejectMsg
  * @property {string} invest.detail.funding.blockedByTabMsg
+ * @property {string} invest.detail.funding.blockedByTabLabel
+ * @property {string} invest.detail.funding.retryButton
+ * @property {string} invest.detail.funding.retryHint
  * @property {Object} invest.detail.networkMismatch - Network mismatch banner copy
  * @property {string} invest.detail.networkMismatch.bannerTitle
  * @property {string} invest.detail.networkMismatch.bannerBody
@@ -428,6 +430,38 @@ export const copy = deepFreeze({
       densityCompactAriaLabel: "Switch to compact density",
       densityComfortableAriaLabel: "Switch to comfortable density",
       densityCurrentAriaLabel: "Current density: {density}",
+      // ── Funding submission lifecycle (issue #1132: deterministic failure
+      //    recovery). {amount} and {currency} are replaced at call time.
+      funding: {
+        // Fund button label while a submission is in-flight.
+        pendingButton: "Funding…",
+        // Confirmed success — idempotency key has been cleared server-safe.
+        successTitle: "Funding submitted",
+        successMsg: "Funding request for {amount} {currency} submitted.",
+        // Generic failure (network error, parse error, unknown).
+        failureTitle: "Funding failed",
+        failureMsg:
+          "Funding request for {amount} {currency} failed. Nothing was committed — you can safely retry.",
+        // Timeout: the request may or may not have reached the server; the
+        // preserved idempotency key makes a retry safe.
+        timeoutTitle: "Request timed out",
+        timeoutMsg:
+          "The funding request timed out. If it was already processed, retrying will not charge twice.",
+        // Server conflict (HTTP 409): the invoice state changed underneath us.
+        conflictTitle: "Funding conflict",
+        conflictMsg:
+          "This invoice was updated elsewhere. Refresh the marketplace to see its current state before retrying.",
+        // Wallet declined to sign the transaction — no request was sent.
+        walletRejectTitle: "Wallet declined",
+        walletRejectMsg: "The transaction was not signed, so nothing was submitted.",
+        // Another tab holds the in-flight lock for this invoice.
+        blockedByTabMsg: "A funding request for this invoice is already in progress in another tab.",
+        blockedByTabLabel: "Funding in progress elsewhere",
+        // Retry affordance shown in the FAILURE state; the preserved
+        // idempotency key guarantees the retry is server-side deduplicated.
+        retryButton: "Retry funding",
+        retryHint: "Retrying re-uses the same secure request reference.",
+      },
       networkMismatch: {
         // Banner shown when the wallet is connected to the wrong network.
         // {walletNetwork} and {invoiceNetwork} are replaced at render time.
