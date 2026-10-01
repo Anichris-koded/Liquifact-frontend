@@ -404,6 +404,19 @@ export default function FundActions({ id, status, maxAmount, currency, yieldValu
         </div>
       )}
 
+      {/* Blocked-by-tab warning — shown when another tab has acquired the
+          cross-tab lock for this invoice. Uses role=alert so screen readers
+          announce it immediately without waiting for a polite live region. */}
+      {isBlocked && (
+        <div
+          role="alert"
+          data-testid="fund-blocked-by-tab"
+          className="no-print mb-4 rounded-xl border border-amber-500/40 bg-amber-900/20 px-4 py-3 text-sm text-amber-200"
+        >
+          {fundingCopy.blockedByTabMsg}
+        </div>
+      )}
+
       {/* Action row */}
       <div
         role="group"
