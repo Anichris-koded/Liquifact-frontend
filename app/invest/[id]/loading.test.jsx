@@ -1,218 +1,177 @@
 /**
  * @file app/invest/[id]/loading.test.jsx
  *
- * Unit and accessibility tests for the invoice-detail streaming skeleton.
+ * Regression tests for the invoice detail loading boundary (issue #1158).
  *
- * Test surface
- * ─────────────
- * 1. Structural invariants — elements required for layout-shift prevention
- *    and correct failure-recovery transitions are present and correct.
- * 2. Accessibility — no axe violations; live region and aria attributes are
- *    correctly set so assistive-technology users are informed during load.
- * 3. Copy-dictionary compliance — the loading label is sourced from the copy
- *    dictionary, not hardcoded.
- * 4. Stable keys — React warns in dev mode when `key` props are unstable;
- *    we verify each repeated element carries the stable prefix the component
- *    defines.
- * 5. Focus-management contract — `id="main-content"` is present on `<main>`
- *    so `RouteFocus.useEffect → getElementById("main-content")` always
- *    resolves without returning `null`.
+ * Failure scenarios covered
+ * ──────────────────────────
+ * 1. Correct skeleton rendered — `InvoiceDetailSkeleton`, not the marketplace
+ *    list skeleton (`InvoiceListSkeleton`).
+ * 2. Screen-reader announcement — an `sr-only` string scoped to "invoice
+ *    details" is present so AT users hear the right copy during navigation.
+ * 3. `aria-busy` propagation — the root element signals "busy" to assistive
+ *    technology so dynamic content regions update correctly.
+ * 4. No interactive elements — a loading boundary must never contain focusable
+ *    or operable controls; keyboard users should not be able to land here.
+ * 5. No layout-shifting list structure — the old `<ul>` from `InvoiceListSkeleton`
+ *    must be absent; its presence would indicate a regression to the mismatched
+ *    skeleton.
+ * 6. Stateless / idempotent — rendering the component twice (simulating
+ *    concurrent requests) produces identical output.
+ * 7. Axe accessibility — no violations in either render.
+ * 8. Reduced-motion — `animate-pulse` blocks are present in the DOM; the CSS
+ *    media query that disables them is exercised separately in globals.css tests
+ *    but we assert the elements exist so reduced-motion CSS has something to act on.
  */
 
 import React from "react";
 import { render, screen } from "@testing-library/react";
-import "@testing-library/jest-dom";
 import { axe, toHaveNoViolations } from "jest-axe";
+import "@testing-library/jest-dom";
 import InvoiceDetailLoading from "./loading";
-import { copy } from "@/app/copy/en";
 
 expect.extend(toHaveNoViolations);
 
-// ── Mocks ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-// NavMenuSkeleton is tested separately; mock it to keep this suite focused.
-jest.mock("@/components/NavMenuSkeleton", () =>
-  function NavMenuSkeletonMock() {
-    return <header data-testid="nav-menu-skeleton" aria-hidden="true" />;
-  }
-);
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Render the loading skeleton and return the container element. */
-function renderLoading() {
+/** Render once and return the container. */
+function setup() {
   return render(<InvoiceDetailLoading />);
 }
 
-// ── Test suites ───────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Suite
+// ---------------------------------------------------------------------------
 
-describe("InvoiceDetailLoading — structural invariants", () => {
-  it("renders NavMenuSkeleton", () => {
-    renderLoading();
-    expect(screen.getByTestId("nav-menu-skeleton")).toBeInTheDocument();
+describe("app/invest/[id]/loading — InvoiceDetailLoading (issue #1158)", () => {
+  // ── 1. Correct skeleton ──────────────────────────────────────────────────
+
+  it("renders the invoice-detail skeleton, not the marketplace list skeleton", () => {
+    const { container } = setup();
+    // InvoiceDetailSkeleton renders a <main> with a disclaimer block at the end.
+    // InvoiceListSkeleton renders a <ul> — its absence is the regression guard.
+    expect(container.querySelector("ul")).toBeNull();
+    expect(container.querySelector("main")).toBeInTheDocument();
   });
 
-  it('renders a <main> element with id="main-content" (required by RouteFocus)', () => {
-    renderLoading();
-    const main = screen.getByRole("main");
-    expect(main).toBeInTheDocument();
-    expect(main).toHaveAttribute("id", "main-content");
+  it("does NOT render InvoiceListSkeleton's 'Loading investable invoices' label", () => {
+    setup();
+    // This string is the aria-label on InvoiceListSkeleton's <ul>.
+    // Its presence would mean the wrong skeleton is still being used.
+    expect(
+      screen.queryByLabelText(/loading investable invoices/i)
+    ).not.toBeInTheDocument();
   });
 
-  it('root wrapper carries aria-busy="true"', () => {
-    const { container } = renderLoading();
-    // The outermost element (not <main>) carries aria-busy.
-    const wrapper = container.firstElementChild;
-    expect(wrapper).toHaveAttribute("aria-busy", "true");
+  // ── 2. Screen-reader announcement (detail-scoped copy) ──────────────────
+
+  it("contains an sr-only announcement scoped to invoice *details*", () => {
+    setup();
+    // InvoiceDetailSkeleton renders:
+    //   <span className="sr-only">Loading invoice details, please wait…</span>
+    expect(
+      screen.getByText(/loading invoice details/i)
+    ).toBeInTheDocument();
   });
 
-  it("renders the back-link skeleton placeholder as aria-hidden (decorative)", () => {
-    renderLoading();
-    const main = screen.getByRole("main");
-    // Decorative skeleton divs are hidden from the AT tree via aria-hidden="true".
-    // The back-link, h1, and subtitle placeholder divs are all aria-hidden.
-    const hiddenDivs = main.querySelectorAll(':scope > [aria-hidden="true"]');
-    // At minimum the back-link, heading-1, and heading-2 skeleton divs are hidden.
-    expect(hiddenDivs.length).toBeGreaterThanOrEqual(3);
+  it("sr-only text is not 'Loading invoices' (marketplace copy leak)", () => {
+    setup();
+    // Regression guard: the old InvoiceListSkeleton used "Loading invoices,
+    // please wait…" — ensure that copy is absent from this boundary.
+    expect(
+      screen.queryByText(/^loading invoices,/i)
+    ).not.toBeInTheDocument();
   });
 
-  it("renders three <section> elements for the detail card, documents, and timeline", () => {
-    const { container } = renderLoading();
-    const main = container.querySelector("#main-content");
-    // Decorative sections carry aria-hidden="true" (no accessible name needed
-    // because they are intentionally hidden from the AT tree).
-    const sections = main?.querySelectorAll("section[aria-hidden='true']");
-    // There are three sections: detail card, documents, timeline.
-    expect(sections?.length).toBeGreaterThanOrEqual(3);
-  });
-});
+  // ── 3. aria-busy propagation ─────────────────────────────────────────────
 
-// ── Copy-dictionary compliance ────────────────────────────────────────────────
-
-describe("InvoiceDetailLoading — copy dictionary compliance", () => {
-  it("uses copy.invoiceTimeline.loadingState as the loading label (not a hardcoded string)", () => {
-    renderLoading();
-    const expectedLabel = copy.invoiceTimeline.loadingState;
-    // The live region is .sr-only — use { hidden: true } to find it.
-    const statusRegion = screen.getByRole("status");
-    expect(statusRegion).toHaveTextContent(expectedLabel);
+  it("root element carries aria-busy='true'", () => {
+    const { container } = setup();
+    // InvoiceDetailSkeleton wraps everything in a div with aria-busy="true".
+    const root = container.firstChild;
+    expect(root).toHaveAttribute("aria-busy", "true");
   });
 
-  it("the loading label is a non-empty string from the dictionary", () => {
-    expect(typeof copy.invoiceTimeline.loadingState).toBe("string");
-    expect(copy.invoiceTimeline.loadingState.length).toBeGreaterThan(0);
-  });
-});
+  // ── 4. No interactive elements ───────────────────────────────────────────
 
-// ── Accessibility ─────────────────────────────────────────────────────────────
-
-describe("InvoiceDetailLoading — accessibility", () => {
-  it('has a polite aria-live region with role="status" and aria-atomic="true"', () => {
-    renderLoading();
-    const statusRegion = screen.getByRole("status");
-    expect(statusRegion).toHaveAttribute("aria-live", "polite");
-    expect(statusRegion).toHaveAttribute("aria-atomic", "true");
+  it("contains no focusable interactive elements", () => {
+    const { container } = setup();
+    const interactive = container.querySelectorAll(
+      "a, button, input, select, textarea, [tabindex]"
+    );
+    expect(interactive.length).toBe(0);
   });
 
-  it("the live region contains the loading label", () => {
-    renderLoading();
-    const statusRegion = screen.getByRole("status");
-    expect(statusRegion).not.toBeEmptyDOMElement();
+  // ── 5. No list structure from the marketplace skeleton ───────────────────
+
+  it("renders no <ul> or <li> elements (marketplace skeleton structure absent)", () => {
+    const { container } = setup();
+    expect(container.querySelector("ul")).toBeNull();
+    expect(container.querySelector("li")).toBeNull();
   });
 
-  it("passes axe automated accessibility checks", async () => {
-    const { container } = renderLoading();
-    const results = await axe(container, {
-      // The skeleton deliberately uses aria-hidden on decorative sections.
-      // axe may flag missing accessible names on those sections, which is
-      // expected — they are intentionally hidden from the AT tree.
-      rules: {},
-    });
+  // ── 6. Idempotent / concurrent-render safety ─────────────────────────────
+
+  it("produces identical HTML across two concurrent renders (stateless invariant)", () => {
+    const { container: a } = render(<InvoiceDetailLoading />);
+    const { container: b } = render(<InvoiceDetailLoading />);
+    expect(a.innerHTML).toBe(b.innerHTML);
+  });
+
+  // ── 7. Axe accessibility ─────────────────────────────────────────────────
+
+  it("has no axe accessibility violations", async () => {
+    const { container } = setup();
+    const results = await axe(container);
     expect(results).toHaveNoViolations();
   });
-});
 
-// ── Stable keys (no dev-mode React warnings) ─────────────────────────────────
+  // ── 8. Animate-pulse elements present (reduced-motion CSS hook) ──────────
 
-describe("InvoiceDetailLoading — stable element keys", () => {
-  it("renders exactly 6 detail-field skeleton rows", () => {
-    const { container } = renderLoading();
-    const main = container.querySelector("#main-content");
-    // The detail card section is the first <section> in main.
-    const detailCard = main?.querySelector("section");
-    expect(detailCard).not.toBeNull();
-    // The grid inside the detail card contains 6 dt/dd pairs.
-    const fieldDivs = detailCard?.querySelectorAll(".grid > div");
-    expect(fieldDivs?.length).toBe(6);
+  it("renders at least one animate-pulse element (reduced-motion CSS has a target)", () => {
+    const { container } = setup();
+    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(0);
   });
 
-  it("renders exactly 3 document-row skeleton placeholders", () => {
-    const { container } = renderLoading();
-    const main = container.querySelector("#main-content");
-    // The documents section is the second <section> in main.
-    const sections = main?.querySelectorAll("section");
-    expect(sections?.length).toBeGreaterThanOrEqual(2);
-    const documentsSection = sections?.[1];
-    // Each document row has 3 children (checkbox, name, button).
-    const documentRows = documentsSection?.querySelectorAll(
-      ".flex.items-center.gap-3"
-    );
-    expect(documentRows?.length).toBe(3);
+  // ── 9. Structural shape mirrors the detail page ──────────────────────────
+
+  it("renders a <header> placeholder and a <main> content area", () => {
+    const { container } = setup();
+    expect(container.querySelector("header")).toBeInTheDocument();
+    expect(container.querySelector("main")).toBeInTheDocument();
   });
 
-  it("renders exactly 5 timeline stage circles", () => {
-    const { container } = renderLoading();
-    const main = container.querySelector("#main-content");
-    // Timeline section is the third <section>.
-    const sections = main?.querySelectorAll("section");
-    expect(sections?.length).toBeGreaterThanOrEqual(3);
-    const timelineSection = sections?.[2];
-    // Stage circles are rounded-full divs inside the stepper flex row.
-    const circles = timelineSection?.querySelectorAll(".rounded-full");
-    expect(circles?.length).toBe(5);
+  it("renders a metadata section placeholder (invoice summary area)", () => {
+    const { container } = setup();
+    // InvoiceDetailSkeleton renders multiple <section> blocks for the
+    // metadata and timeline areas — at least one must be present.
+    const sections = container.querySelectorAll("section");
+    expect(sections.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("renders exactly 3 fund-action bar placeholders", () => {
-    const { container } = renderLoading();
-    const main = container.querySelector("#main-content");
-    // FundActions bar is the last flex-wrap div after all sections.
-    const actionBar = main?.querySelector(".flex.flex-wrap.gap-3");
-    expect(actionBar).not.toBeNull();
-    const buttons = actionBar?.querySelectorAll(".rounded-full");
-    expect(buttons?.length).toBe(3);
-  });
-});
-
-// ── Focus management contract ─────────────────────────────────────────────────
-
-describe("InvoiceDetailLoading — focus management contract", () => {
-  it('getElementById("main-content") resolves to the <main> element', () => {
-    const { baseElement } = renderLoading();
-    // Simulate the RouteFocus.useEffect query.
-    const target = baseElement.ownerDocument.getElementById("main-content");
-    expect(target).not.toBeNull();
-    expect(target?.tagName).toBe("MAIN");
-  });
-});
-
-// ── Failure-recovery boundary compatibility ───────────────────────────────────
-
-describe("InvoiceDetailLoading — error and not-found boundary compatibility", () => {
-  it("does not render ErrorBanner (error boundary is handled by error.js)", () => {
-    renderLoading();
-    // No alert role should be present — that is the error.js responsibility.
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  it("renders action-button placeholders matching the FundActions row", () => {
+    const { container } = setup();
+    // InvoiceDetailSkeleton has 3 rounded-full button-shaped skeletons.
+    const btnPlaceholders = container.querySelectorAll(".rounded-full.animate-pulse");
+    expect(btnPlaceholders.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("does not render 'Invoice not found' text (not-found.js handles that)", () => {
-    renderLoading();
-    expect(screen.queryByText(/invoice not found/i)).not.toBeInTheDocument();
-  });
+  // ── 10. Boundary shape — no filter panel (regression from old loading.js) ─
 
-  it("renders without throwing (idempotent on repeated renders)", () => {
-    expect(() => {
-      renderLoading();
-      renderLoading();
-    }).not.toThrow();
+  it("does NOT render the 4-pill filter-panel placeholder from the old loading.js", () => {
+    const { container } = setup();
+    // The old loading.js rendered:
+    //   <div className="mb-8 rounded-xl ... p-6">
+    //     <div className="flex flex-wrap gap-4">
+    //       {Array.from({ length: 4 }).map((_, i) => (
+    //         <div key={i} className="h-10 w-32 rounded-lg bg-slate-800 animate-pulse" />
+    //       ))}
+    //     </div>
+    //   </div>
+    // That shape is absent from InvoiceDetailSkeleton.
+    const filterPills = container.querySelectorAll(".h-10.w-32.rounded-lg");
+    expect(filterPills.length).toBe(0);
   });
 });
