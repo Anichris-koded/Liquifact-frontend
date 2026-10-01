@@ -27,8 +27,10 @@
  *
  * Data flow
  * ─────────
- * `params.id` → `getInvoiceById(id)` (sync, mock data for now)
- *             → `notFound()` if the id is unknown or malformed
+ * `params.id` → `normalizeInvoiceId` (validation boundary, #1170)
+ *             → `resolveInvoice` (deterministic, #1167)
+ *             → `notFound()` for invalid/unknown ids
+ *             → typed error for data-layer failure / malformed record
  *             → RSC renders layout + passes props to client islands
  */
 
@@ -47,8 +49,96 @@ import InvoiceDetailClient from "./InvoiceDetailClient";
 import InvoiceDetailItems, { buildInvoiceDetailItems } from "./InvoiceDetailItems";
 import InvoiceDetailExport from "./InvoiceDetailExport";
 import { getMarketplaceHref } from "@/lib/marketplaceRoute";
+import { reportError } from "@/lib/observability/reportError";
+import { normalizeInvoiceId, isWellFormedInvoice, VALIDATION_REASONS } from "../validation";
 
 const detail = copy.invest.detail;
+
+// ── Deterministic invoice resolution (#1167) ──────────────────────────────────
+//
+// Invariants:
+//  1. `resolveInvoice` is pure and idempotent — the same (id, lookup) always
+//     produces the same status/reason. Retrying a failed render therefore
+//     converges to the same outcome and can never commit partial state.
+//  2. A data-layer failure or a malformed record is *never* rendered as real
+//     data and never silently swallowed: it becomes an explicit ERROR result
+//     that is reported to the observability sink and surfaced through the
+//     segment error boundary.
+//  3. No underlying error message is exposed. The typed error carries only a
+//     stable code + reason; the user sees localized, generic copy.
+
+export const INVOICE_RESOLUTION = Object.freeze({
+  OK: "ok",
+  NOT_FOUND: "not_found",
+  ERROR: "error",
+});
+
+/** Stable error code surfaced to the route error boundary. */
+export const INVOICE_DETAIL_ERROR_CODE = "INVOICE_DETAIL_UNAVAILABLE";
+
+/**
+ * Typed, non-sensitive error thrown when a valid invoice id cannot be resolved
+ * because the data layer failed or returned a malformed record.
+ */
+export class InvoiceDetailResolveError extends Error {
+  /**
+   * @param {string} reason one of {@link VALIDATION_REASONS}
+   */
+  constructor(reason) {
+    super(detail.loadErrorMsg);
+    this.name = "InvoiceDetailResolveError";
+    this.code = INVOICE_DETAIL_ERROR_CODE;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Resolve the `[id]` segment to an invoice, deterministically.
+ *
+ * @param {unknown} rawId  the raw route segment
+ * @param {(id: string) => (object | null | undefined)} [lookup]
+ * @returns {{
+ *   status: "ok", invoice: object
+ * } | {
+ *   status: "not_found", reason: string
+ * } | {
+ *   status: "error", reason: string
+ * }}
+ */
+export function resolveInvoice(rawId, lookup = getInvoiceById) {
+  const normalized = normalizeInvoiceId(rawId);
+  if (!normalized.ok) {
+    // Invalid/duplicate/boundary ids are a not-found outcome, not a crash.
+    return { status: INVOICE_RESOLUTION.NOT_FOUND, reason: normalized.reason };
+  }
+
+  let invoice;
+  try {
+    invoice = lookup(normalized.id);
+  } catch {
+    reportError(new Error("Invoice lookup failed"), {
+      scope: "invest.invoice_detail",
+      reason: VALIDATION_REASONS.LOOKUP_FAILED,
+    });
+    return { status: INVOICE_RESOLUTION.ERROR, reason: VALIDATION_REASONS.LOOKUP_FAILED };
+  }
+
+  if (invoice === null || invoice === undefined) {
+    return { status: INVOICE_RESOLUTION.NOT_FOUND, reason: VALIDATION_REASONS.NOT_FOUND };
+  }
+
+  if (!isWellFormedInvoice(invoice)) {
+    // A malformed record would render as NaN / blank cells and could hide data
+    // loss. Fail explicitly and observably instead.
+    reportError(new Error("Malformed invoice record"), {
+      scope: "invest.invoice_detail",
+      reason: VALIDATION_REASONS.MALFORMED_RECORD,
+    });
+    return { status: INVOICE_RESOLUTION.ERROR, reason: VALIDATION_REASONS.MALFORMED_RECORD };
+  }
+
+  return { status: INVOICE_RESOLUTION.OK, invoice };
+}
 
 // ── Pure server-side helpers (not exported to the client bundle) ──────────────
 
@@ -153,34 +243,19 @@ export default async function InvoiceDetailPage({ params, searchParams }) {
   const rawId = resolvedParams && typeof resolvedParams === "object" ? resolvedParams.id : undefined;
   const id = normalizeInvoiceId(rawId);
 
-  // Deterministic id normalization: invalid/empty ids short-circuit to the
-  // not-found boundary instead of reaching the data layer with junk input.
-  const normalizedId = normalizeInvoiceId(id);
-  if (!normalizedId) {
+  const resolution = resolveInvoice(id, getInvoiceById);
+
+  if (resolution.status === INVOICE_RESOLUTION.NOT_FOUND) {
     notFound();
+  } else if (resolution.status === INVOICE_RESOLUTION.ERROR) {
+    // Failure recovery is deterministic: the segment error boundary
+    // (`./error.js`) renders a typed, non-sensitive message and its `reset()`
+    // prop re-runs this render. Because `resolveInvoice` is pure, a retry
+    // either succeeds identically or fails identically — no partial state.
+    throw new InvoiceDetailResolveError(resolution.reason);
   }
 
-  const invoice = getInvoiceById(normalizedId);
-
-  const backHref = getMarketplaceHref(normalizeSearchParams(searchParams));
-
-  // Normalize the id once so cache keys, lookups, and downstream props all
-  // agree on the same canonical value.  This makes repeated/racing renders
-  // for the same logical invoice deterministic.
-  const normalizedId = typeof id === "string" ? id.trim() : String(id ?? "").trim();
-  const invoice = normalizedId ? getInvoiceById(normalizedId) : null;
-
-  // Invariant: only fully-shaped invoices may render. A malformed record
-  // is treated as absent so no partial state leaks into the UI or JSON-LD.
-  if (!isRenderableInvoice(invoice)) {
-    notFound();
-  }
-
-  // Invariant: the resolved invoice id must match the requested id.
-  // A mismatch indicates data-layer corruption and must not be rendered.
-  if (invoice.id !== id) {
-    notFound();
-  }
+  const invoice = resolution.invoice;
 
   const invoiceJsonLd = buildInvoiceJsonLd(invoice);
   const detailItems = buildInvoiceDetailItems(invoice);

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ErrorBanner from "@/components/ErrorBanner";
 import { reportError } from "@/lib/observability/reportError";
 import { copy } from "@/app/copy/en";
+import { reportError } from "@/lib/observability/reportError";
 
 /**
  * Route-level error boundary for `app/invest/[id]`.
@@ -67,9 +68,14 @@ export default function InvoiceDetailError({ error, reset }) {
 
   // Report each distinct error exactly once, even across re-renders.
   useEffect(() => {
-    if (reportedRef.current === error) return;
-    reportedRef.current = error;
-    reportError(error, { digest: error?.digest, scope: "invest/[id]" });
+    // Forward to the pluggable observability sink so failures are diagnosable
+    // in production. `digest` is the opaque server-side correlation id; the raw
+    // `error.message` is intentionally NOT rendered because it may contain
+    // internal or sensitive detail.
+    reportError(error, {
+      scope: "invest.invoice_detail",
+      digest: error?.digest,
+    });
   }, [error]);
 
   const exhausted = recoveryAction(attempts) === "reload";
@@ -115,11 +121,9 @@ export default function InvoiceDetailError({ error, reset }) {
         <ErrorBanner
           variant="server"
           title={copy.error?.title || "Something went wrong"}
-          // Deliberately not `error.message`: see the note above.
           description={copy.error?.description}
-          actionLabel={action.label}
-          previewLabel={copy.error?.previewLabel}
-          onAction={action.onAction}
+          actionLabel={copy.error?.actionLabel}
+          onAction={reset}
         />
       </main>
     </div>

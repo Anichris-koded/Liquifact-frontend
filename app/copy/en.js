@@ -40,6 +40,8 @@ import { TRUSTED_WALLET_INSTALL_URL } from "./constants";
  * @property {string} invest.announceFilteredCount
  * @property {string} invest.announceInvoicesLoaded
  * @property {string} invest.announceShowing
+ * @property {string} invest.routeBoundaryTitle - Fallback heading when the invest layout boundary rejects invalid input
+ * @property {string} invest.routeBoundaryDescription - Fallback body for the invest layout boundary
  * @property {Object} invest.fundAmount - Partial funding input copy
  * @property {string} invest.fundAmount.label
  * @property {string} invest.fundAmount.placeholder
@@ -340,6 +342,9 @@ export const copy = deepFreeze({
     announceFilteredCount: "{matched} of {total} invoices match",
     announceInvoicesLoaded: "{count} investable invoices loaded",
     announceShowing: "Showing {shown} of {total} investable invoices",
+    routeBoundaryTitle: "Marketplace unavailable",
+    routeBoundaryDescription:
+      "This part of the marketplace could not be displayed. Please reload the page to try again.",
     invalidCursorTitle: "This result set is no longer valid.",
     invalidCursorDescription:
       "This result set is no longer valid. Refresh the marketplace to continue.",
@@ -477,26 +482,6 @@ export const copy = deepFreeze({
         alertLabel: "Network mismatch warning",
         // Announced to screen readers when the banner first appears.
         announceMessage: "Network mismatch: please switch your wallet to {invoiceNetwork}.",
-      },
-      /**
-       * Funding submission copy — used by FundActions.jsx.
-       * {amount} and {currency} are replaced at runtime.
-       */
-      funding: {
-        successMsg: "Funding request for {amount} {currency} submitted.",
-        successTitle: "Funding submitted",
-        failureMsg: "Funding request for {amount} {currency} failed.",
-        failureTitle: "Funding failed",
-        timeoutMsg: "The funding request timed out. Please retry.",
-        timeoutTitle: "Funding timed out",
-        conflictMsg: "This invoice has already been funded. Retry to confirm status.",
-        conflictTitle: "Funding conflict",
-        walletRejectMsg: "Funding was declined by your wallet.",
-        walletRejectTitle: "Wallet rejected",
-        pendingButton: "Funding\u2026",
-        retryButton: "Retry funding",
-        blockedByTabMsg:
-          "Another tab is currently processing this invoice. Please wait for it to finish.",
       },
       inlineEdit: {
         editButton: "Edit {field}",
