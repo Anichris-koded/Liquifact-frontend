@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useTransition } from "react";
 import ErrorBanner from "../components/ErrorBanner";
 import { reportError } from "../lib/observability/reportError";
 import { copy } from "./copy/en";
@@ -200,9 +200,7 @@ export function safelyReportError(error, context) {
 }
 
 export default function GlobalError({ error, reset }) {
-  // Track the last reported dedupe key so re-renders and StrictMode
-  // double-invocations do not double-report the same failure.
-  const lastReportedKey = useRef(null);
+  const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     const normalized = normalizeError(error);
@@ -241,10 +239,14 @@ export default function GlobalError({ error, reset }) {
           variant="server"
           title={copy.error.title}
           description={copy.error.description}
-          details={recoveryFailed ? ERROR_RECOVERY_FAILED : undefined}
-          actionLabel={copy.error.actionLabel}
+          actionLabel={isPending ? "Retrying..." : copy.error.actionLabel}
           previewLabel={copy.error.previewLabel}
-          onAction={hasReset ? reset : undefined}
+          onAction={() => {
+            if (isPending) return;
+            startTransition(() => {
+              reset();
+            });
+          }}
         />
       </main>
     </div>

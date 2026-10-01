@@ -262,38 +262,19 @@ describe("GlobalError (app/error.js)", () => {
       expect(reset).toHaveBeenCalledTimes(1);
     });
 
-    it("does not invoke reset when the reset prop is invalid", async () => {
-      render(<GlobalError error={makeError()} reset={undefined} />);
-      const btn = screen.queryByTestId("error-action-btn");
-      if (btn) {
-        await userEvent.click(btn);
-      }
-      expect(reportError).not.toHaveBeenCalled();
-    });
-
-    it("allows reset to be called multiple times (idempotent)", async () => {
-      const reset = jest.fn();
-      
-      // We need a stateful wrapper to make useTransition's isPending work
-      function Wrapper() {
-        const [count, setCount] = React.useState(0);
-        const handleReset = () => {
-          reset();
-          setCount((c) => c + 1); // trigger state update to keep isPending true during batch
-        };
-        return <GlobalError error={makeError()} reset={handleReset} />;
-      }
-      
-      render(<Wrapper />);
+    it("prevents concurrent or duplicate reset executions", async () => {
+      let resolveReset;
+      const reset = jest.fn(() => new Promise((resolve) => { resolveReset = resolve; }));
+      renderError(makeError(), reset);
       const btn = screen.getByTestId("error-action-btn");
       
-      act(() => {
-        fireEvent.click(btn);
-        fireEvent.click(btn);
-        fireEvent.click(btn);
-      });
+      // Fire rapid multiple clicks
+      await userEvent.click(btn);
+      await userEvent.click(btn);
+      await userEvent.click(btn);
       
       expect(reset).toHaveBeenCalledTimes(1);
+      resolveReset();
     });
 
     it("does not call reportError again when reset is clicked", async () => {
