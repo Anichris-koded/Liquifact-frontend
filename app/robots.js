@@ -1,13 +1,12 @@
-import { NextResponse } from 'next/server';
+import { buildRobots } from "@/lib/seo/robotsPolicy";
 
-const baseUrl = process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
+/**
+ * Paths to hide from crawlers. Every entry is validated by
+ * lib/seo/robotsPolicy.js before it reaches robots.txt; invalid entries are dropped.
+ * Empty by default so the output is identical to the previous behaviour.
+ */
+const DISALLOW_CANDIDATES = [];
 
-export async function GET() {
-  const content = `User-agent: *\nAllow: /\nSitemap: ${baseUrl}/sitemap.xml`;
-  return new NextResponse(content, {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/plain',
-    },
-  });
+export default function robots() {
+  return buildRobots(DISALLOW_CANDIDATES, process.env.NEXT_PUBLIC_SITE_URL);
 }

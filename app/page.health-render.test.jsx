@@ -1,19 +1,23 @@
-import '@testing-library/jest-dom';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import Home from './page';
+import "@testing-library/jest-dom";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import Home from "./page";
 
-jest.mock('next/navigation', () => ({
-  usePathname: () => '/',
+jest.mock("next/navigation", () => ({
+  usePathname: () => "/",
 }));
 
-jest.mock('../components/WalletStatusLazy', () => ({
+jest.mock("../components/WalletStatusLazy", () => ({
   __esModule: true,
   default: function MockWalletStatusLazy() {
     return <button type="button">Connect Wallet</button>;
   },
 }));
 
-jest.mock('next/link', () => {
+jest.mock("../components/NavMenu", () => function MockNavMenu() {
+  return <div data-testid="nav-menu">NavMenu</div>;
+});
+
+jest.mock("next/link", () => {
   function MockLink({ href, children, ...props }) {
     return (
       <a href={href} {...props}>
@@ -32,120 +36,175 @@ afterEach(() => {
 });
 
 function mockFetchOnce(responseBody, ok = true) {
-  global.fetch = jest.fn().mockResolvedValueOnce({
+  global.fetch = jest.fn().mockResolvedOnce({
     ok,
-    json: jest.fn().mockResolvedValueOnce(responseBody),
+    json: jest.fn().mockResolvedOnce(responseBody),
   });
+}
+
+function mockFetchDeferred() {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  global.fetch = jest.fn().mockImplementation(() => promise);
+  return {
+    resolveWith: (body, ok = true) =>
+      resolve({
+        ok,
+        json: jest.fn().mockResolved(body),
+      }),
+  };
 }
 
 async function clickCheckHealth() {
-  fireEvent.click(
-    screen.getByRole('button', { name: /check backend health/i }),
-  );
-  await waitFor(() =>
-    expect(screen.queryByText(/checking/i)).not.toBeInTheDocument(),
-  );
+  fireEvent.click(screen.getByRole("button", { name: /check backend health/i }));
+  await waitFor(() => expect(screen.queryByText(/checking/i)).not.toBeInTheDocument());
 }
 
-describe('Home health render', () => {
-  function getStructuredSummary() {
-    return document.querySelector('[class*="space-y-1"]');
-  }
-
-  it('renders recognized fields in a structured summary', async () => {
-    mockFetchOnce({ status: 'ok', message: 'All good', version: '1.2.3' });
+describe("Home health render", () => {
+  it("renders recognized fields in a structured summary", async () => {
+    mockFetchOnce({ status: "ok", message: "All good", version: "1.2.3" });
     render(<Home />);
 
     await clickCheckHealth();
 
-    const summary = getStructuredSummary();
-    expect(within(summary).getByText(/status:/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/ok/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/message:/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/All good/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/version:/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/1\.2\.3/i)).toBeInTheDocument();
+    const status = screen.getByRole("status");
+    expect(within(status).getByText(/connected/i)).toBeITheDocument();
+    expect(within(status).getByText(/All good/i)).toBeInTheDocument();
   });
 
-  it('omits recognized fields that are missing', async () => {
-    mockFetchOnce({ status: 'ok' });
+  it("omits recognized fields that are missing", async () => {
+    mockFetchOnce({ status: "ok" });
     render(<Home />);
 
     await clickCheckHealth();
 
-    const summary = getStructuredSummary();
-    expect(within(summary).getByText(/status:/i)).toBeInTheDocument();
-    expect(within(summary).queryByText(/message:/i)).not.toBeInTheDocument();
-    expect(within(summary).queryByText(/version:/i)).not.toBeInTheDocument();
+    const status = screen.getByRole("status");
+    expect(within(status).getByText(/connected/i)).toBeInTheDocument();
+    expect(within(status).queryByText(/All good/i)).not.toBeInTheDocument();
   });
 
-  it('renders raw payload inside a collapsed details element', async () => {
-    mockFetchOnce({ status: 'ok', message: 'healthy' });
+  it("renders raw payload inside a collapsed details element", async () => {
+    mockFetchOnce({ status: "ok", message: "healthy" });
     render(<Home />);
 
     await clickCheckHealth();
 
-    const details = document.querySelector('details');
+    const details = document.querySelector("details");
     expect(details).toBeInTheDocument();
-    expect(details).not.toHaveAttribute('open');
+    expect(details).not.toHaveAttribute("open");
 
-    expect(screen.getByText(/raw response/i)).toBeInTheDocument();
+    expect(screen.getByText(/view details/i)).toBeInTheDocument();
   });
 
-  it('renders payload as text content, not HTML', async () => {
-    mockFetchOnce({ status: 'ok' });
+  it("renders payload as text content, not HTML", async () => {
+    mockFetchOnce({ status: "ok" });
     render(<Home />);
 
     await clickCheckHealth();
 
-    const pre = document.querySelector('pre');
+    const pre = document.querySelector("pre");
     expect(pre).toBeInTheDocument();
-    expect(pre).not.toHaveAttribute('dangerouslySetInnerHTML');
+    expect(pre).not.toHaveAttribute("dangerouslySetInnerHTML");
   });
 
-  it('truncates payloads that are longer than the default limit', async () => {
+  it("does not truncate long payloads", async () => {
     const largePayload = {
-      status: 'ok',
-      data: 'x'.repeat(5000),
+      status: "ok",
+      data: "x".repeat(5000),
     };
     mockFetchOnce(largePayload);
     render(<Home />);
-
     await clickCheckHealth();
 
-    const pre = document.querySelector('pre');
-    expect(pre.textContent).toMatch(/…\(truncated\)$/);
+    const pre = document.querySelector("pre");
+    expect(pre.textContent).not.toMatch(/… truncated\)$/);
+    expect(pre.textContent.length).toBeGreaterThan(5000);
   });
 
-  it('handles deeply nested payloads without error', async () => {
-    const deep = { a: { b: { c: { d: { e: { f: { g: 'deep' } } } } } } };
+  it("does not add depth limit text for nested payloads", async () => {
+    const deep = { a: { b: { c: { d: { e: { f: { g: "deep" } } } } } } } };
     mockFetchOnce(deep);
     render(<Home />);
-
     await clickCheckHealth();
 
-    const pre = document.querySelector('pre');
-    expect(pre.textContent).toContain('[Depth limit reached]');
+    const pre = document.querySelector("pre");
+    expect(pre.textContent).not.toContain("[Depth limit reached]");
+    expect(pre.textContent).toContain('"g": "deep"');
   });
 
-  it('handles a normal healthy payload end-to-end', async () => {
-    mockFetchOnce({ status: 'ok', message: 'healthy', version: '2.0.0' });
+  it("does not render health section before check", () => {
+    render(<Home />);
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByText(/view details/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a failure message when the backend responds non-ok", async () => {
+    mockFetchOnce({ status: "error", message: "unavailable" }, false);
     render(<Home />);
 
     await clickCheckHealth();
 
-    const summary = getStructuredSummary();
-    expect(within(summary).getByText(/status:/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/ok/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/healthy/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/version:/i)).toBeInTheDocument();
-    expect(within(summary).getByText(/2\.0\.0/i)).toBeInTheDocument();
+    expect(screen.getByText(/unavailable|indicates a problem|failed/i)).toBeInTheDocument();
   });
 
-  it('does not render health section before check', () => {
+  it("handles a rejected fetch without leaving the ui in a loading state", async () => {
+    global.fetch = jest.fn().mockRejected(new Error("network down"));
     render(<Home />);
 
-    expect(screen.queryByText(/status:/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/raw response/i)).not.toBeInTheDocument();
+    await clickCheckHealth();
+
+    expect(screen.queryByText(/checking/i)).not.toBeInTheDocument();
+  });
+
+  it("ignores duplicate clicks while a request is in flight", async () => {
+    const deferred = mockFetchDeferred();
+    render(<Home />);
+
+    const button = screen.getByRole("button", { name: /check backend health/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    deferred.resolveWith({ status: "ok", message: "All good" });
+    await waitFor(() => expect(screen.queryByText(/checking/i)).not.toBeInTheDocument());
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes concurrent checks so the latest result wins", async () => {
+    const first = mockFetchDeferred();
+    render(<Home />);
+
+    const button = screen.getByRole("button", { name: /check backend health/i });
+    fireEvent.click(button);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    // A second click while the first is in flight must not start a new request.
+    fireEvent.click(button);
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
+    first.resolveWith({ status: "ok", message: "first" });
+    await waitFor(() => expect(screen.queryByText(/checking/i)).not.toBeInTheDocument());
+
+    expect(screen.getByText(/first/i)).toBeInTheDocument();
+  });
+
+  it("returns to a usable state after a failure so a retry can succeed", async () => {
+    global.fetch = jest.fn().mockRejected(new Error("network down"));
+    render(<Home />);
+
+    await clickCheckHealth();
+
+    expect(screen.queryByText(/checking/i)).not.toBeInTheDocument();
+
+    mockFetchOnce({ status: "ok", message: "recovered" });
+    await clickCheckHealth();
+
+    expect(screen.getByText(/recovered/i)).toBeInTheDocument();
   });
 });

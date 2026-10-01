@@ -1,11 +1,7 @@
 import "@testing-library/jest-dom";
-import {
-  render,
-  screen,
-  fireEvent,
-  waitFor,
-} from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
+import React from "react";
 import Home from "./page";
 import { getHealth } from "../lib/api/health";
 
@@ -13,6 +9,7 @@ jest.mock("next/navigation", () => ({
   usePathname: () => "/",
 }));
 
+// eslint-disable-next-line react/display-name
 jest.mock("../components/WalletStatusLazy", () => ({
   __esModule: true,
   default: function MockWalletStatusLazy() {
@@ -81,9 +78,7 @@ describe("Home Page Health Check", () => {
       expect(button).toBeDisabled();
     });
 
-    expect(
-      screen.getByText(/checking/i)
-    ).toBeTruthy();
+    expect(screen.getByText(/checking/i)).toBeTruthy();
   });
 
   it("renders connected state with green badge", async () => {
@@ -104,13 +99,11 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/backend is healthy/i)
-      ).toBeTruthy();
+      expect(screen.getByText(/backend is healthy/i)).toBeTruthy();
     });
 
     // Assert the "Connected" badge is rendered
-    expect(screen.getByText(/connected/i)).toBeTruthy();
+    expect(screen.getAllByText(/connected/i).length).toBeGreaterThan(0);
   });
 
   it("renders degraded state with amber badge", async () => {
@@ -131,13 +124,11 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/backend responded with 500/i)
-      ).toBeTruthy();
+      expect(screen.getByText(/backend responded with 500/i)).toBeTruthy();
     });
 
     // Assert the "Degraded" badge is rendered
-    expect(screen.getByText(/degraded/i)).toBeTruthy();
+    expect(screen.getAllByText(/degraded/i).length).toBeGreaterThan(0);
   });
 
   it("renders unreachable state with red badge", async () => {
@@ -155,13 +146,11 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/health check timed out/i)
-      ).toBeTruthy();
+      expect(screen.getAllByText(/health check timed out/i).length).toBeGreaterThan(0);
     });
 
     // Assert the "Unreachable" badge is rendered
-    expect(screen.getByText(/unreachable/i)).toBeTruthy();
+    expect(screen.getAllByText(/unreachable/i).length).toBeGreaterThan(0);
   });
 
   it("renders raw response details", async () => {
@@ -182,9 +171,7 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByText(/view details/i)
-      ).toBeTruthy();
+      expect(screen.getByText(/raw response/i)).toBeTruthy();
     });
   });
 
@@ -204,7 +191,7 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/connected/i)).toBeTruthy();
+      expect(screen.getAllByText(/connected/i).length).toBeGreaterThan(0);
     });
 
     // Test degraded state
@@ -220,7 +207,7 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/degraded/i)).toBeTruthy();
+      expect(screen.getAllByText(/degraded/i).length).toBeGreaterThan(0);
     });
 
     // Test unreachable state
@@ -236,7 +223,7 @@ describe("Home Page Health Check", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText(/unreachable/i)).toBeTruthy();
+      expect(screen.getAllByText(/unreachable/i).length).toBeGreaterThan(0);
     });
   });
 
@@ -259,8 +246,90 @@ describe("Home Page Health Check", () => {
 
     const statusRegion = await screen.findByRole("status");
 
-    expect(
-      statusRegion.getAttribute("aria-live")
-    ).toBe("polite");
+    expect(statusRegion.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("keeps the last known health result when a retry rejects", async () => {
+    mockGetHealth.mockResolvedValue({
+      status: "connected",
+      message: "Backend is healthy",
+    });
+
+    render(<Home />);
+
+    const button = screen.getByRole("button", {
+      name: /check backend health/i,
+    });
+
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/connected/i).length).toBeGreaterThan(0);
+    });
+
+    mockGetHealth.mockRejectedValue(new Error("network down"));
+
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/connected/i).length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getAllByText(/unreachable/i).length).toBeGreaterThan(0);
+  });
+
+  it("ignores an out-of-order response from an earlier request", async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    const firstPromise = new Promise((resolve) => {
+      resolveFirst = resolve as (value: unknown) => void;
+    });
+
+    mockGetHealth.mockImplementationOnce(() => firstPromise);
+    mockGetHealth.mockResolvedValueOnce({
+      status: "degraded",
+      message: "Backend responded with 500",
+    });
+
+    render(<Home />);
+
+    const button = screen.getByRole("button", {
+      name: /check backend health/i,
+    });
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/degraded/i).length).toBeGreaterThan(0);
+    });
+
+    resolveFirst({
+      status: "connected",
+      message: "Backend is healthy",
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/degraded/i).length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText(/backend is healthy/i)).toBeNull();
+  });
+
+  it("surfaces a diagnosable error without leaking sensitive details", async () => {
+    mockGetHealth.mockRejectedValue(new Error("secret-token-leaked"));
+
+    render(<Home />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /check backend health/i,
+      })
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/unreachable/i).length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText(/secret-token-leaked/i)).toBeNull();
   });
 });

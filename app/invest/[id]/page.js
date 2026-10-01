@@ -1,179 +1,343 @@
-﻿"use client";
+// @ts-nocheck
+/**
+ * @file app/invest/[id]/page.js
+ *
+ * Server Component shell for the invoice detail page.
+ *
+ * RSC split rationale
+ * ───────────────────
+ * The previous version was a single "use client" module, meaning every
+ * formatting helper, copy string, and layout byte shipped to the browser on
+ * the highest-intent route.  This file contains NO browser APIs and NO
+ * React hooks — it runs entirely on the server, so headings, the metadata
+ * table, and JSON-LD script are streamed as HTML and never appear in the JS
+ * bundle.
+ *
+ * Interactive pieces are delegated to small client boundaries:
+ *   - `InvoiceDetailClient` — density toggle + metadata
+ *   - `InvoiceDetailItems` — bulk-select toolbar over detail documents
+ *   - `FundActions` — fund / copy link / print
+ *
+ * Compatibility contract
+ * ──────────────────────
+ * The public behavior of this route is preserved across errors, empty data,
+ * and upgrades: unknown ids render the not-found boundary; malformed or
+ * missing fields degrade to `INVALID_VALUE_FALLBACK` without throwing; and
+ * JSON-LD is only emitted when it can be safely serialized.
+ *
+ * Data flow
+ * ─────────
+ * `params.id` → `normalizeInvoiceId` (validation boundary, #1170)
+ *             → `resolveInvoice` (deterministic, #1167)
+ *             → `notFound()` for invalid/unknown ids
+ *             → typed error for data-layer failure / malformed record
+ *             → RSC renders layout + passes props to client islands
+ */
 
-import Button from '@/components/Button'
-import { useEffect, useState } from "react";
+import React from "react";
 import Link from "next/link";
-import Button from '@/components/Button'
-import { useParams, notFound } from "next/navigation";
-import ErrorBanner from "@/components/ErrorBanner";
-import InvoiceListSkeleton from "@/components/InvoiceListSkeleton";
-import WalletStatus from "@/components/WalletStatus";
-import Button from '@/components/Button'
-import { useWallet, WALLET_STATES } from "@/components/WalletContext";
-import Button from '@/components/Button'
-import { copy } from "../../copy/en";
-import Button from '@/components/Button'
+import { notFound } from "next/navigation";
+import NavMenu from "@/components/NavMenu";
+import StatusPill from "@/components/StatusPill";
+import InvoiceTimeline from "@/components/InvoiceTimeline";
+import { copy } from "@/app/copy/en";
+import { INVALID_VALUE_FALLBACK, formatCurrency, formatAmount } from "@/lib/format/currency";
 import { getInvoiceById } from "../lib";
+import FundActions from "./FundActions";
+import { RouteFocus } from "./FocusManager";
+import InvoiceDetailClient from "./InvoiceDetailClient";
+import InvoiceDetailItems, { buildInvoiceDetailItems } from "./InvoiceDetailItems";
+import InvoiceDetailExport from "./InvoiceDetailExport";
+import { getMarketplaceHref } from "@/lib/marketplaceRoute";
+import { reportError } from "@/lib/observability/reportError";
+import { normalizeInvoiceId, isWellFormedInvoice, VALIDATION_REASONS } from "../validation";
 
-// DEV-only delay (ms) to make the skeleton visible during local development.
-const DEV_DELAY = process.env.NODE_ENV === "development" ? 800 : 0;
+const detail = copy.invest.detail;
 
-function loadInvoiceById(id) {
-  return new Promise((resolve) => {
-    setTimeout(() => resolve(getInvoiceById(id)), DEV_DELAY);
-  });
+// ── Deterministic invoice resolution (#1167) ──────────────────────────────────
+//
+// Invariants:
+//  1. `resolveInvoice` is pure and idempotent — the same (id, lookup) always
+//     produces the same status/reason. Retrying a failed render therefore
+//     converges to the same outcome and can never commit partial state.
+//  2. A data-layer failure or a malformed record is *never* rendered as real
+//     data and never silently swallowed: it becomes an explicit ERROR result
+//     that is reported to the observability sink and surfaced through the
+//     segment error boundary.
+//  3. No underlying error message is exposed. The typed error carries only a
+//     stable code + reason; the user sees localized, generic copy.
+
+export const INVOICE_RESOLUTION = Object.freeze({
+  OK: "ok",
+  NOT_FOUND: "not_found",
+  ERROR: "error",
+});
+
+/** Stable error code surfaced to the route error boundary. */
+export const INVOICE_DETAIL_ERROR_CODE = "INVOICE_DETAIL_UNAVAILABLE";
+
+/**
+ * Typed, non-sensitive error thrown when a valid invoice id cannot be resolved
+ * because the data layer failed or returned a malformed record.
+ */
+export class InvoiceDetailResolveError extends Error {
+  /**
+   * @param {string} reason one of {@link VALIDATION_REASONS}
+   */
+  constructor(reason) {
+    super(detail.loadErrorMsg);
+    this.name = "InvoiceDetailResolveError";
+    this.code = INVOICE_DETAIL_ERROR_CODE;
+    this.reason = reason;
+  }
 }
 
-export function InvoiceDetail({ loadInvoice = loadInvoiceById }) {
-  const params = useParams();
-  const id = params?.id;
-  const [invoice, setInvoice] = useState(null); // null = loading
-  const [loadError, setLoadError] = useState("");
-  const { state: walletState, connect } = useWallet();
-
-  useEffect(() => {
-    if (!id) {
-      return;
-    }
-
-    let isActive = true;
-
-    const load = async () => {
-      try {
-        const inv = await loadInvoice(id);
-
-        if (!isActive) {
-          return;
-        }
-
-        if (!inv) {
-          notFound();
-          return;
-        }
-
-        setInvoice(inv);
-      } catch {
-        if (!isActive) {
-          return;
-        }
-
-        setLoadError("Unable to load invoice details right now.");
-      }
-    };
-
-    void load();
-
-    return () => {
-      isActive = false;
-    };
-  }, [id, loadInvoice]);
-
-  if (!id) {
-    return notFound();
+/**
+ * Resolve the `[id]` segment to an invoice, deterministically.
+ *
+ * @param {unknown} rawId  the raw route segment
+ * @param {(id: string) => (object | null | undefined)} [lookup]
+ * @returns {{
+ *   status: "ok", invoice: object
+ * } | {
+ *   status: "not_found", reason: string
+ * } | {
+ *   status: "error", reason: string
+ * }}
+ */
+export function resolveInvoice(rawId, lookup = getInvoiceById) {
+  const normalized = normalizeInvoiceId(rawId);
+  if (!normalized.ok) {
+    // Invalid/duplicate/boundary ids are a not-found outcome, not a crash.
+    return { status: INVOICE_RESOLUTION.NOT_FOUND, reason: normalized.reason };
   }
 
-  const handleFund = () => {
-    if (walletState === WALLET_STATES.DISCONNECTED) {
-      connect();
-    }
-  };
+  let invoice;
+  try {
+    invoice = lookup(normalized.id);
+  } catch {
+    reportError(new Error("Invoice lookup failed"), {
+      scope: "invest.invoice_detail",
+      reason: VALIDATION_REASONS.LOOKUP_FAILED,
+    });
+    return { status: INVOICE_RESOLUTION.ERROR, reason: VALIDATION_REASONS.LOOKUP_FAILED };
+  }
 
-  const isFundingDisabled =
-    walletState === WALLET_STATES.CONNECTING ||
-    walletState === WALLET_STATES.NO_WALLET;
+  if (invoice === null || invoice === undefined) {
+    return { status: INVOICE_RESOLUTION.NOT_FOUND, reason: VALIDATION_REASONS.NOT_FOUND };
+  }
+
+  if (!isWellFormedInvoice(invoice)) {
+    // A malformed record would render as NaN / blank cells and could hide data
+    // loss. Fail explicitly and observably instead.
+    reportError(new Error("Malformed invoice record"), {
+      scope: "invest.invoice_detail",
+      reason: VALIDATION_REASONS.MALFORMED_RECORD,
+    });
+    return { status: INVOICE_RESOLUTION.ERROR, reason: VALIDATION_REASONS.MALFORMED_RECORD };
+  }
+
+  return { status: INVOICE_RESOLUTION.OK, invoice };
+}
+
+// ── Pure server-side helpers (not exported to the client bundle) ──────────────
+
+/**
+ * Normalize a dynamic route id.
+ *
+ * Invariant: the id used for lookup is always a non-empty trimmed string.
+ * Returns `null` for values that cannot represent a valid id so callers can
+ * deterministically route to the not-found boundary instead of throwing.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function normalizeInvoiceId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const trimmed = String(value).trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Format a yield value as a percentage string.
+ * Falls back to `INVALID_VALUE_FALLBACK` for unresolvable values.
+ *
+ * @param {string|number|null|undefined} value
+ * @returns {string}
+ */
+// eslint-disable-next-line no-unused-vars
+function formatYield(value) {
+  const formatted = formatAmount(value);
+  return formatted === INVALID_VALUE_FALLBACK ? formatted : `${formatted}%`;
+}
+
+/**
+ * Request-scoped memoized invoice lookup.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function sanitizeText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .trim()
+    .replace(/[<>{}"']/g, "");
+}
+
+/**
+ * Build a JSON-LD `Offer` object for the invoice.
+ * Returns `null` when invoice is absent.
+ *
+ * @param {object|null} invoice
+ * @returns {object|null}
+ */
+// eslint-disable-next-line no-unused-vars
+function buildInvoiceJsonLd(invoice) {
+  if (!invoice) return null;
+
+  const issuer = sanitizeText(invoice.issuer);
+  const amount = sanitizeText(invoice.amount);
+  const currency = sanitizeText(invoice.currency);
+  const dueDate = sanitizeText(invoice.dueDate);
+  const yieldValue = sanitizeText(invoice.yield);
+  const status = sanitizeText(invoice.status);
+
+  const descriptionParts = [
+    issuer ? `Invoice offering from ${issuer}` : "Invoice offering",
+    amount ? `Amount ${amount}` : null,
+    currency ? `Currency ${currency}` : null,
+    dueDate ? `Maturity ${dueDate}` : null,
+    yieldValue ? `Estimated yield ${yieldValue}` : null,
+    status ? `Status ${status}` : null,
+  ].filter(Boolean);
+
+  return {
+    "@context": "https://schema.org",
+    "@type": "Offer",
+    name: issuer ? `Invoice offering from ${issuer}` : "Invoice offering",
+    description: descriptionParts.join(". "),
+    seller: issuer ? { "@type": "Organization", name: issuer } : undefined,
+    price: amount || undefined,
+    priceCurrency: currency || undefined,
+    availability: status === "Open" ? "https://schema.org/InStock" : undefined,
+    validFrom: dueDate || undefined,
+  };
+}
+
+// ── Server Component ──────────────────────────────────────────────────────────
+
+/**
+ * Page-level Server Component.
+ *
+ * Next.js App Router passes `{ params }` where `params.id` is the dynamic
+ * segment.  We await params so the component is compatible with both the
+ * current Next.js 14 sync form and the upcoming async-params API.
+ *
+ * @param {{ params: Promise<{ id: string }> | { id: string } }} props
+ */
+// eslint-disable-next-line no-unused-vars
+export default async function InvoiceDetailPage({ params, searchParams }) {
+  // Support both the current (sync object) and future (Promise) params shape.
+  const resolvedParams = await Promise.resolve(params);
+  const rawId = resolvedParams && typeof resolvedParams === "object" ? resolvedParams.id : undefined;
+  const id = normalizeInvoiceId(rawId);
+
+  const resolution = resolveInvoice(id, getInvoiceById);
+
+  if (resolution.status === INVOICE_RESOLUTION.NOT_FOUND) {
+    notFound();
+  } else if (resolution.status === INVOICE_RESOLUTION.ERROR) {
+    // Failure recovery is deterministic: the segment error boundary
+    // (`./error.js`) renders a typed, non-sensitive message and its `reset()`
+    // prop re-runs this render. Because `resolveInvoice` is pure, a retry
+    // either succeeds identically or fails identically — no partial state.
+    throw new InvoiceDetailResolveError(resolution.reason);
+  }
+
+  const invoice = resolution.invoice;
+
+  const invoiceJsonLd = buildInvoiceJsonLd(invoice);
+  const detailItems = buildInvoiceDetailItems(invoice);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-slate-950 text-slate-100 print-page-wrapper">
+      {/* ── Navigation ────────────────────────────────────────────────── */}
+      <header className="no-print border-b border-slate-800 px-6 py-4 flex items-center justify-between">
         <Link
           href="/"
           className="inline-block py-3 text-xl font-semibold tracking-tight text-cyan-400 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 rounded"
         >
-          â† LiquiFact
+          {detail.backToHome}
         </Link>
-        <WalletStatus />
+        <NavMenu />
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 py-12">
+      <main id="main-content" className="max-w-4xl mx-auto px-6 py-12">
+        <RouteFocus />
+        {/* ── JSON-LD structured data ────────────────────────────────── */}
+        {invoiceJsonLd ? (
+          <script
+            type="application/ld+json"
+            // JSON.stringify is safe here; sanitizeText already stripped
+            // characters that could escape the script context.
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(invoiceJsonLd) }}
+          />
+        ) : null}
+
+        {/* ── Back navigation ───────────────────────────────────────── */}
         <Link
-          href="/invest"
-          className="inline-block mb-6 text-sm text-slate-400 hover:text-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 rounded"
-          aria-label="Back to marketplace"
+          href={backHref}
+          className="no-print inline-block mb-6 text-sm text-slate-400 hover:text-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400 rounded"
+          aria-label={detail.backToMarketplaceLabel}
         >
-          â† Back to marketplace
+          {detail.backToMarketplace}
         </Link>
 
-        <h1 className="text-2xl font-bold mb-2">Invoice details</h1>
-        <p className="text-slate-400 mb-8">
-          Review the invoice terms before funding.
-        </p>
+        {/* ── Page heading ──────────────────────────────────────────── */}
+        <h1 className="text-2xl font-bold mb-2">{detail.pageTitle}</h1>
+        <p className="text-slate-400 mb-8">{detail.pageSub}</p>
 
-        {loadError ? (
-          <ErrorBanner
-            variant="error"
-            title="Unable to load invoice details"
-            description={loadError}
-            previewLabel="Invoice detail"
-          />
-        ) : invoice === null ? (
-          <InvoiceListSkeleton rows={1} />
-        ) : (
-          <>
-            <section
-              aria-labelledby="invoice-summary-heading"
-              className="rounded-xl border border-slate-800 bg-slate-900/50 p-6 mb-6"
-            >
-              <h2
-                id="invoice-summary-heading"
-                className="text-xl font-semibold mb-4"
-              >
-                {invoice.issuer}
-              </h2>
-              <dl className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-                <div>
-                  <dt className="text-slate-500">Amount</dt>
-                  <dd className="text-slate-100">
-                    {invoice.currency} {invoice.amount}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-slate-500">Estimated yield</dt>
-                  <dd className="text-slate-100">{invoice.yield}</dd>
-                </div>
-                <div>
-                  <dt className="text-slate-500">Maturity date</dt>
-                  <dd className="text-slate-100">{invoice.dueDate}</dd>
-                </div>
-                <div>
-                  <dt className="text-slate-500">Status</dt>
-                  <dd className="text-slate-100">{invoice.status}</dd>
-                </div>
-              </dl>
-            </section>
+        {/* ── Invoice metadata (density-aware, client-rendered) ─────── */}
+        <InvoiceDetailClient
+          summaryHeading={invoice.issuer}
+          labelIssuer={detail.labelIssuer}
+          labelAmount={detail.labelAmount}
+          labelYield={detail.labelYield}
+          labelMaturity={detail.labelMaturity}
+          labelStatus={detail.labelStatus}
+          labelReference={detail.labelReference}
+          issuer={invoice.issuer}
+          formattedAmount={formatCurrency(invoice.amount, { currency: invoice.currency })}
+          formattedYield={formatYield(invoice.yield)}
+          dueDate={invoice.dueDate}
+          referenceId={invoice.id ?? normalizedId}
+          statusPill={<StatusPill status={invoice.status ?? ""} />}
+        />
 
-            <button
-              type="button"
-              onClick={handleFund}
-              disabled={isFundingDisabled}
-              className="rounded-full bg-cyan-500/20 text-cyan-400 px-6 py-3 text-sm font-medium hover:bg-cyan-500/30 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-950 focus:ring-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed"
-              aria-label="Fund this invoice"
-            >
-              Fund this invoice
-            </button>
+        {/* ── Detail documents with bulk-select toolbar ─────────────── */}
+        <InvoiceDetailItems initialItems={detailItems} />
 
-            <div className="mt-6 rounded-xl border border-slate-800 bg-slate-900/30 p-4 text-sm text-slate-300">
-              Note: Yield references are educational only and reflect on-chain
-              basis-point assumptions. Invoice contracts settle at maturity.
-              Funding commits principal and is subject to wallet approval.
-            </div>
-          </>
-        )}
+        {/* ── CSV / JSON export ────────────────────────────────────── */}
+        <InvoiceDetailExport invoice={invoice} />
+
+        {/* ── Lifecycle timeline (server-rendered, status-driven) ───────── */}
+        <InvoiceTimeline
+          status={invoice.status}
+          timestamps={invoice.timestamps}
+          events={invoice.events}
+          className="mb-6"
+        />
+
+        {/* ── Interactive controls (client boundary) ────────────────── */}
+        <FundActions
+          id={invoice.id}
+          status={invoice.status}
+          maxAmount={invoice.amountValue}
+          currency={invoice.currency}
+          yieldValue={invoice.yieldValue}
+        />
       </main>
     </div>
   );
 }
-
-export default function InvoiceDetailPage() {
-  return <InvoiceDetail />;
-}
-
