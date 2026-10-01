@@ -15,8 +15,7 @@ import { useLocalStorage } from "../../lib/hooks/useLocalStorage";
 import { loadMockSettings, getCategoryList } from "./lib";
 import { exportAsCSV, exportAsJSON } from "../../utils/export";
 
-export { getCategoryList, getCategoryList as getCategories };
-
+// Deterministic storage key for persisted settings.
 const SETTINGS_STORAGE_KEY = "liquifact-settings-v1";
 
 const DEFAULT_SETTINGS = {
@@ -36,6 +35,7 @@ export const DEFAULT_FILTERS = { category: "all", query: "" };
 function normalizeSettings(raw) {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_SETTINGS };
   return {
+    // Preserve only known string fields to keep persisted state deterministic.
     displayName:
       typeof raw.displayName === "string" ? raw.displayName : DEFAULT_SETTINGS.displayName,
     email: typeof raw.email === "string" ? raw.email : DEFAULT_SETTINGS.email,
@@ -79,6 +79,7 @@ export function sanitizeSettingsItems(raw) {
 
 const validateDisplayName = (value) => {
   const trimmed = (value ?? "").trim();
+  // Required, minimum, and maximum length invariants.
   if (trimmed.length === 0) {
     return copy.settings.errors.required;
   }
@@ -99,16 +100,53 @@ const validateEmail = (value) => {
   if (trimmed.length > EMAIL_MAX_LENGTH) {
     return copy.settings.errors.emailTooLong;
   }
-  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+  // Conservative email shape check; server remains source of truth.
+  const EMAIL_RE = /^[^\s]+@[^\s]+\.[^\s]{2,}$/;
   if (!EMAIL_RE.test(trimmed)) {
     return copy.settings.errors.invalidEmail;
   }
   return null;
 };
 
+// Pure helper: deterministic backoff schedule for retry attempt N (1-indexed).
+export function getLoadRetryDelayMs(attempt) {
+  if (!Number.isFinite(attempt) || attempt < 1) return 0;
+  const capped = Math.min(attempt, 10);
+  // Exponential backoff with a hard cap to avoid unbounded delays.
+  return LOAD_BASE_BACKOFF_MS * Math.pow(2, capped - 1);
+}
+
+// Pure helper: decide whether another retry is allowed.
+export function shouldRetryLoad(attempt, error) {
+  if (attempt >= LOAD_MAX_ATTEMPTS) return false;
+  if (!error) return false;
+  // Non-retryable: caller aborted or explicit validation-style failures.
+  if (error.name === "AbortError") return false;
+  if (error.retryable === false) return false;
+  return true;
+}
+
+// Pure helper: normalize any loader rejection into a stable, loggable shape.
+export function normalizeLoadError(error) {
+  if (error instanceof Error) {
+    // Preserve retryability flag when explicitly set to false.
+    return {
+      name: error.name || "Error",
+      message: error.message || "Unknown error",
+      retryable: error.retryable !== false,
+    };
+  }
+  return {
+    name: "Error",
+    message: typeof error === "string" ? error : "Unknown error",
+    retryable: true,
+  };
+}
+
 export function applyFiltersToSettings(settings, filters) {
   if (!Array.isArray(settings)) return [];
   let result = settings;
+  // Category filter is exact-match; "all" is a passthrough.
   if (filters.category && filters.category !== "all") {
     result = result.filter((s) => s.category === filters.category);
   }
@@ -127,6 +165,7 @@ export function getSettingsLoadAnnouncement(settings, filterInfo) {
   if (!Array.isArray(settings) || settings.length === 0) {
     return "No settings available";
   }
+  // Filter-aware announcements keep screen readers in sync with the UI.
   if (filterInfo) {
     if (filterInfo.filterActive && filterInfo.filteredCount === 0) {
       return "No preferences match the active filters";
@@ -148,6 +187,7 @@ export function getSettingsShowingAnnouncement(shown, total) {
 function ProfileSection({ settings, setSettings }) {
   const safeSettings = useMemo(() => normalizeSettings(settings), [settings]);
 
+  // Field updates always merge through normalizeSettings to keep shape stable.
   const updateField = useCallback(
     (key) => (next) => {
       const merged = normalizeSettings({
@@ -199,6 +239,7 @@ function ProfileSection({ settings, setSettings }) {
 function InlineEditRowSimple({ value, label, category, onSave }) {
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(value);
+  // Local error state is scoped to the row and reset on cancel/save.
   const [error, setError] = useState(null);
   const inputRef = useRef(null);
 
@@ -224,6 +265,7 @@ function InlineEditRowSimple({ value, label, category, onSave }) {
   const save = () => {
     const trimmed = draft.trim();
     if (trimmed.length === 0) {
+      // Reject empty values deterministically; do not mutate parent state.
       setError("Value cannot be empty");
       return;
     }
@@ -279,6 +321,7 @@ function InlineEditRowSimple({ value, label, category, onSave }) {
   if (category === "wallet") {
     return (
       <div className="flex items-center gap-2">
+        {/* Wallet values are read-only here; edit is gated by category. */}
         <span className="text-sm text-slate-100">{value}</span>
         <button
           type="button"
@@ -309,6 +352,7 @@ function InlineEditRowSimple({ value, label, category, onSave }) {
 function useDebounce(value, delay) {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
+    // Zero-delay short-circuits to avoid scheduling a needless timer.
     if (delay <= 0) {
       setDebounced(value);
       return;
@@ -326,6 +370,8 @@ function useDebounce(value, delay) {
 export function SettingsPage({ loadSettings }) {
   const [settings, setSettings] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  // loadAttempt tracks the current retry attempt (1-indexed).
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [loading, setLoading] = useState(true);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
@@ -342,6 +388,7 @@ export function SettingsPage({ loadSettings }) {
 
   const loadRef = useRef(loadSettings);
   loadRef.current = loadSettings;
+  const requestIdRef = useRef(0);
 
   const runLoad = useCallback(() => {
     const requestId = ++loadRequestIdRef.current;
