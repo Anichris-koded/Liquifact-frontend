@@ -56,6 +56,9 @@
  * @see app/invest/loading.js            — route-level Suspense fallback
  */
 import MarketplaceShell from "./MarketplaceShell";
+import { copy } from "@/app/copy/en";
+import { reportError } from "@/lib/observability/reportError";
+import { validateInvestChildren, validateInvestLayoutParams } from "./validation";
 
 export default function InvestLayout({ children }) {
   return <MarketplaceShell>{children}</MarketplaceShell>;
