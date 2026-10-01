@@ -89,6 +89,17 @@ jest.mock("@/app/invest/MarketplaceContext", () => ({
   useMarketplace: jest.fn(),
 }));
 
+// Network guard — pinned to "ok" so the funding form stays enabled and the
+// wallet-state branching in handleFundAmount is what is actually exercised.
+// (The guard's own blocking behaviour is covered by FundActions.networkMismatch.)
+jest.mock("@/lib/hooks/useWalletNetworkGuard", () => ({
+  useWalletNetworkGuard: () => ({
+    status: "ok",
+    walletNetwork: "testnet",
+    invoiceNetwork: "testnet",
+  }),
+}));
+
 /**
  * Lightweight BroadcastChannel mock with cross-hook messaging support.
  */
