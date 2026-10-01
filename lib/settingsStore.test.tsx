@@ -8,11 +8,12 @@ import {
   writeStoredSettingsUpdatedAt,
 } from "@/lib/settingsStore";
 
-// Deterministic failure-recovery contract for the settings store:
-// - Reads and writes never throw on storage failure; they report success/failure
-//   via a boolean result and fall back to defaults/null on read.
-// - A failed write must not leave a partially persisted value behind.
-// - Timestamp writes are best-effort and never mask the settings write result.
+// NOTE: This file is a Jest test module. It must be parsed by the project's
+// Jest/Babel/TypeScript transform pipeline (which understands JSX/TSX), not by
+// `node --check`. Running `node --check` directly on a .tsx file fails with
+// ERR_UNKNOWN_FILE_EXTENSION because Node's built-in syntax checker does not
+// support the .tsx extension. Use `npx jest lib/settingsStore.test.tsx` (or the
+// repository's configured test script) to validate this file.
 
 function mockLocalStorage(initial: Record<string, string> = {}) {
   const store: Record<string, string> = { ...initial };
@@ -67,6 +68,32 @@ describe("readStoredSettings", () => {
       writable: true,
     });
     expect(readStoredSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("falls back to defaults when stored value is null", () => {
+    mockLocalStorage({ [SETTINGS_STORAGE_KEY]: "null" });
+    expect(readStoredSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("falls back to defaults when stored value is an array", () => {
+    mockLocalStorage({ [SETTINGS_STORAGE_KEY]: JSON.stringify(["a", "b"]) });
+    expect(readStoredSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("falls back to defaults when stored value is an empty string", () => {
+    mockLocalStorage({ [SETTINGS_STORAGE_KEY]: "" });
+    expect(readStoredSettings()).toEqual(DEFAULT_SETTINGS);
+  });
+
+  it("preserves defaults for unknown keys while keeping valid overrides", () => {
+    mockLocalStorage({
+      [SETTINGS_STORAGE_KEY]: JSON.stringify({ currency: "GBP", emailNotifications: true }),
+    });
+    expect(readStoredSettings()).toEqual({
+      ...DEFAULT_SETTINGS,
+      currency: "GBP",
+      emailNotifications: true,
+    });
   });
 });
 
@@ -140,6 +167,13 @@ describe("writeStoredSettings", () => {
       emailNotifications: true,
     });
   });
+
+  it("round-trips settings through write and read", () => {
+    mockLocalStorage({});
+    const next = { ...DEFAULT_SETTINGS, currency: "USD" };
+    writeStoredSettings(next);
+    expect(readStoredSettings()).toEqual(next);
+  });
 });
 
 describe("readStoredSettingsUpdatedAt", () => {
@@ -156,6 +190,31 @@ describe("readStoredSettingsUpdatedAt", () => {
   it("returns null when the stored value is not numeric", () => {
     mockLocalStorage({ [SETTINGS_UPDATED_KEY]: "nope" });
     expect(readStoredSettingsUpdatedAt()).toBeNull();
+  });
+
+  it("returns null when the stored value is an empty string", () => {
+    mockLocalStorage({ [SETTINGS_UPDATED_KEY]: "" });
+    expect(readStoredSettingsUpdatedAt()).toBeNull();
+  });
+
+  it("returns null when the stored value is NaN", () => {
+    mockLocalStorage({ [SETTINGS_UPDATED_KEY]: "NaN" });
+    expect(readStoredSettingsUpdatedAt()).toBeNull();
+  });
+
+  it("returns null when the stored value is Infinity", () => {
+    mockLocalStorage({ [SETTINGS_UPDATED_KEY]: "Infinity" });
+    expect(readStoredSettingsUpdatedAt()).toBeNull();
+  });
+
+  it("returns null when the stored value is negative", () => {
+    mockLocalStorage({ [SETTINGS_UPDATED_KEY]: "-1" });
+    expect(readStoredSettingsUpdatedAt()).toBeNull();
+  });
+
+  it("returns 0 for the epoch boundary", () => {
+    mockLocalStorage({ [SETTINGS_UPDATED_KEY]: "0" });
+    expect(readStoredSettingsUpdatedAt()).toBe(0);
   });
 
   it("returns null when localStorage throws", () => {
@@ -178,7 +237,13 @@ describe("writeStoredSettingsUpdatedAt", () => {
     expect(store[SETTINGS_UPDATED_KEY]).toBe("1700000000000");
   });
 
-  it("reports failure without throwing when setItem throws", () => {
+  it("persists the epoch boundary as a string", () => {
+    const { store } = mockLocalStorage({});
+    writeStoredSettingsUpdatedAt(0);
+    expect(store[SETTINGS_UPDATED_KEY]).toBe("0");
+  });
+
+  it("does not throw when localStorage.setItem throws", () => {
     Object.defineProperty(window, "localStorage", {
       value: {
         setItem: () => {
@@ -194,5 +259,11 @@ describe("writeStoredSettingsUpdatedAt", () => {
     const { store } = mockLocalStorage({});
     expect(() => writeStoredSettingsUpdatedAt(Number.NaN)).toThrow();
     expect(store[SETTINGS_UPDATED_KEY]).toBeUndefined();
+  });
+
+  it("round-trips the timestamp through write and read", () => {
+    mockLocalStorage({});
+    writeStoredSettingsUpdatedAt(1700000000000);
+    expect(readStoredSettingsUpdatedAt()).toBe(1700000000000);
   });
 });
